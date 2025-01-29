@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Notebooks
+.ipynb_checkpoints/
+
+build/
+dist/
+MANIFEST
+
+# Sphinx documentation
+docs/_build/
+
+.coverage
+
+# vim
+.*.sw?
+
+# PyCharm
+.idea
+
