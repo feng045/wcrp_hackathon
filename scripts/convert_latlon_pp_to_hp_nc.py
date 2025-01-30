@@ -9,7 +9,8 @@ import xarray as xr
 import earth2grid
 
 
-def convert_latlon_pp_to_healpix_nc(inpath, outpath, max_level=10):
+def convert_latlon_pp_to_healpix_nc(inpath, outpath, varname, max_level=10):
+    print(f'Load data from: {inpath}')
     cube = iris.load_cube(inpath)
     src = earth2grid.latlon.equiangular_lat_lon_grid(*cube.shape)
 
@@ -25,14 +26,16 @@ def convert_latlon_pp_to_healpix_nc(inpath, outpath, max_level=10):
         # The underlying code needs data in the right order, which is why the .copy() is nec.
         z_torch = torch.as_tensor(cube.data.astype(np.double)[::-1].copy())
         z_hpx = regrid(z_torch)
-        ds[f'OLR_{level}'] = xr.DataArray(z_hpx.numpy(), coords={f'cell_{level}': np.arange(len(z_hpx))})
+        ds[f'{varname}_{level}'] = xr.DataArray(z_hpx.numpy(), coords={f'cell_{level}': np.arange(len(z_hpx))})
 
+    print(f'Write data to: {outpath}')
     ds.to_netcdf(outpath)
 
 
 if __name__ == '__main__':
     inpath = Path(sys.argv[1])
     outpath = Path(sys.argv[2])
+    varname = sys.argv[3]
 
-    convert_latlon_pp_to_healpix_nc(inpath, outpath)
+    convert_latlon_pp_to_healpix_nc(inpath, outpath, varname)
 
