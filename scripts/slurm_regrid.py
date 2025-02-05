@@ -1,7 +1,13 @@
 import sys
 from pathlib import Path
-from convert_latlon_pp_to_hp_nc import convert_latlon_pp_to_healpix_nc
+# from convert_latlon_pp_to_hp_nc import convert_latlon_pp_to_healpix_nc
+from convert_3d import convert_latlon_cube_to_healpix
 
+
+varname2cfname = {
+    'pe_T': 'air_temperature',
+    'OLR': 'toa_outgoing_longwave_flux',
+}
 
 def main(input_output_files, array_index, paths_per_job=10):
     print(input_output_files, array_index)
@@ -14,10 +20,10 @@ def main(input_output_files, array_index, paths_per_job=10):
         varname = inpath.parts[-2]
         tmp_outpath = outpath.parent / ('.regrid.tmp.' + outpath.stem)
         print(varname, inpath, tmp_outpath, outpath)
+        cfname = varname2cfname[varname]
         tmp_outpath.parent.mkdir(exist_ok=True, parents=True)
-        convert_latlon_pp_to_healpix_nc(inpath, tmp_outpath, varname)
+        convert_latlon_cube_to_healpix(inpath, tmp_outpath, cfname)
         tmp_outpath.rename(outpath)
-
 
 
 if __name__ == '__main__':

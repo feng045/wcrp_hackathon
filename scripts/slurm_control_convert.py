@@ -11,13 +11,13 @@ def sysrun(cmd):
 SLURM_SCRIPT = """#!/bin/bash
 #SBATCH --job-name="RGlatlon2hp"
 #SBATCH --time=04:00:00
-#SBATCH --mem=16000
+#SBATCH --mem=64000
 #SBATCH --account=hrcm
 #SBATCH --partition=standard
 #SBATCH --qos=short
 #SBATCH --array=0-{njobs}
-#SBATCH -o slurm/output/RGlatlon2hp_%a-%J.out
-#SBATCH -e slurm/output/RGlatlon2hp_%a-%J.err
+#SBATCH -o slurm/output/RGlatlon2hp_{date_string}_%a_%J.out
+#SBATCH -e slurm/output/RGlatlon2hp_{date_string}_%a_%J.err
 
 ARRAY_INDEX=${{SLURM_ARRAY_TASK_ID}}
 
@@ -30,7 +30,7 @@ if __name__ == '__main__':
     basedir = Path('/gws/nopw/j04/hrcm/cache/torau/Lorenzo_u-cu087')
     outdir = Path('/gws/nopw/j04/hrcm/mmuetz/Lorenzo_u-cu087')
     pp_paths = sorted(basedir.glob('**/*.pp'))
-    pp_paths = [p for p in pp_paths if 'OLR' in str(p)]
+    pp_paths = [p for p in pp_paths if ('OLR' in str(p)) or ('pe_T' in str(p))]
     # print(pp_paths)
     outpaths = []
     for pp_path in pp_paths:
@@ -60,6 +60,7 @@ if __name__ == '__main__':
             njobs=njobs,
             input_output_files=input_output_files,
             paths_per_job=paths_per_job,
+            date_string=date_string,
         )
     )
 
