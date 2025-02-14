@@ -14,7 +14,7 @@ def hp_coarsen(data):
     return data.reshape(-1, 4).mean(axis=1)
 
 
-def convert_latlon_cube_to_healpix(inpath, outpath, varname, max_level=10):
+def convert_latlon_cube_to_healpix(inpath, outpaths, varname, max_zoom_level=10):
     tmpdir = Path('/work/scratch-nopw2/mmuetz/wcrp_hackathon/')
     tmppath = tmpdir.joinpath(*inpath.parts[1:]).with_suffix('.nc')
     tmppath.parent.mkdir(exist_ok=True, parents=True)
@@ -31,21 +31,22 @@ def convert_latlon_cube_to_healpix(inpath, outpath, varname, max_level=10):
     dims = da.dims
 
     print('create ds')
-    dsout = xr.Dataset(coords=da.copy().drop_vars(['latitude', 'longitude']).coords, attrs=da.attrs)
+    dsout_tpl = xr.Dataset(coords=da.copy().drop_vars(['latitude', 'longitude']).coords, attrs=da.attrs)
     print('load da')
     da.load()
     print('loaded')
 
     # all dims/coords with latitude, longitude.
     reduced_dims = [d for d in dims if d not in ['latitude', 'longitude']]
-    reduced_coords = dsout.coords
+    reduced_coords = dsout_tpl.coords
 
-    dim_shape = [v for v in dsout.sizes.values()]
+    dim_shape = [v for v in dsout_tpl.sizes.values()]
     dim_ranges = [range(s) for s in dim_shape]
 
     lat_lon_shape = (len(da.latitude), len(da.longitude))
     src = earth2grid.latlon.equiangular_lat_lon_grid(*lat_lon_shape)
 
+    # The y-dir is indexed in reverse for some reason.
     # Build a slice to invert latitude (for passing to regridding).
     data_slice = [slice(None) if d != 'latitude' else slice(None, None, -1) for d in dims]
     target_data = da.values[*data_slice].copy().astype(np.double)
@@ -55,7 +56,7 @@ def convert_latlon_cube_to_healpix(inpath, outpath, varname, max_level=10):
     # Faster, and ensures concsistency of e.g. global mean.
 
     # Note, you pass in PixelOrder.NEST here. .XY() (as in example) is equivalent to .RING.
-    hpx = earth2grid.healpix.Grid(level=max_level, pixel_order=earth2grid.healpix.PixelOrder.NEST)
+    hpx = earth2grid.healpix.Grid(level=max_zoom_level, pixel_order=earth2grid.healpix.PixelOrder.NEST)
     regrid = earth2grid.get_regridder(src, hpx)
 
     regridded_data = np.zeros(dim_shape + [hpx.shape[0]])
@@ -63,41 +64,38 @@ def convert_latlon_cube_to_healpix(inpath, outpath, varname, max_level=10):
     # Note this works for empty dim_ranges (goes through loop once).
     for idx in product(*dim_ranges):
         print(idx)
-        # TODO: Why is this needed??!?!?
-        # My guess is that the y-dir is indexed in reverse for some reason.
-        # The underlying code needs data in the right order, which is why the .copy() is nec.
         z_torch = torch.as_tensor(target_data[idx])
         # print('  created z_torch')
         z_hpx = regrid(z_torch)
         # if idx == () this still works (i.e. does nothing to regridded_data).
         regridded_data[idx] = z_hpx.numpy()
 
-    for level in range(max_level, -1, -1):
-        print(level)
-        if level == max_level:
-            dsout[f'{varname}_{level}'] = xr.DataArray(
-                regridded_data,
-                dims=reduced_dims + [f'cell_{level}'],
-                coords={f'cell_{level}': np.arange(len(z_hpx))}
-            )
-        else:
-            coarse_regridded_data = np.zeros(dim_shape + [12 * 4**level])
-            print(coarse_regridded_data.shape)
+    zooms = range(max_zoom_level + 1)[::-1]
+    assert len(zooms) == len(outpaths)
+    for outpath, zoom in zip(outpaths, zooms):
+        dsout = dsout_tpl.copy()
+        print(zoom)
+        if zoom != max_zoom_level:
+            coarse_regridded_data = np.zeros(dim_shape + [12 * 4**zoom])
+            # print(coarse_regridded_data.shape)
             for idx in product(*dim_ranges):
                 coarse_regridded_data[idx] = hp_coarsen(regridded_data[idx])
-            dsout[f'{varname}_{level}'] = xr.DataArray(
-                coarse_regridded_data,
-                dims=reduced_dims + [f'cell_{level}'],
-                coords={f'cell_{level}': np.arange(coarse_regridded_data.shape[-1])}
-            )
             regridded_data = coarse_regridded_data
 
-    dsout.attrs['grid_mapping'] = 'healpix_nested'
-    dsout.attrs['input_file'] = str(inpath)
-    dsout.attrs['suite'] = 'u-cu087'
+        dsout[f'{varname}'] = xr.DataArray(
+            regridded_data,
+            dims=reduced_dims + ['cell'],
+            coords={'cell': np.arange(regridded_data.shape[-1])}
+        )
+        dsout.attrs['grid_mapping'] = 'healpix_nested'
+        dsout.attrs['healpix_zoom'] = zoom
+        dsout.attrs['input_file'] = str(inpath)
+        dsout.attrs['suite'] = 'u-cu087'
 
-    outpath.parent.mkdir(exist_ok=True, parents=True)
-    dsout.to_netcdf(outpath)
+        outpath.parent.mkdir(exist_ok=True, parents=True)
+        print(outpath)
+        dsout.to_netcdf(outpath)
+
     tmppath.unlink()
 
 

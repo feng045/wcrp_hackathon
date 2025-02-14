@@ -31,24 +31,32 @@ if __name__ == '__main__':
     outdir = Path('/gws/nopw/j04/hrcm/mmuetz/Lorenzo_u-cu087')
     pp_paths = sorted(basedir.glob('**/*.pp'))
     pp_paths = [p for p in pp_paths if ('OLR' in str(p)) or ('pe_T' in str(p))]
+    # pp_paths = [p for p in pp_paths if ('OLR' in str(p))]
     # print(pp_paths)
     outpaths = []
     for pp_path in pp_paths:
         varname = pp_path.parts[-2]
-        outpath = Path(f'/gws/nopw/j04/hrcm/mmuetz/Lorenzo_u-cu087/{varname}/healpix') / ('experimental_' + pp_path.stem + '.hpz0-10.nc')
-        outpaths.append(outpath)
+        zoom_outpaths = [
+            outdir / f'{varname}/healpix/z{z}' / ('experimental_' + pp_path.stem + f'.hpz{z}.nc')
+            for z in range(11)[::-1]
+        ]
+        outpaths.append(zoom_outpaths)
 
     lines = []
-    for inpath, outpath in zip(pp_paths, outpaths):
-        if not outpath.exists():
-            lines.append(f'{inpath},{outpath}')
+    for inpath, zoom_outpaths in zip(pp_paths, outpaths):
+        for outpath in zoom_outpaths:
+            if not outpath.exists():
+                lines.append(','.join(str(p) for p in [inpath] + zoom_outpaths))
+                break
 
     now = pd.Timestamp.now()
     date_string = now.strftime("%Y%m%d_%H%M%S")
     input_output_files = Path(f'slurm/input_output_files_{date_string}.txt')
     input_output_files.write_text('\n'.join(lines))
+    print(input_output_files)
 
     slurm_script_path = Path(f'slurm/regrid_script_{date_string}.sh')
+    print(slurm_script_path)
 
     # paths_per_job = 5
     # njobs = 5
@@ -66,5 +74,6 @@ if __name__ == '__main__':
 
     if len(lines):
         print(sysrun(f'sbatch {slurm_script_path}').stdout)
+        # pass
 
 
