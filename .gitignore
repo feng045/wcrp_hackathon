@@ -24,3 +24,6 @@ docs/_build/
 # PyCharm
 .idea
 
+
+# Zarr
+*.zarr
