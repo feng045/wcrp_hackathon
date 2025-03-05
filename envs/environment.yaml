@@ -4,15 +4,19 @@ channels:
 dependencies:
 - python==3.12.*
 - aiohttp
+- black
 - cartopy
 - cdsapi
 - cfgrib
 - cfunits
+- cf_xarray
 - cmocean
 - dask
 - dask-jobqueue
 - distributed
 - easygems
+- esmf
+- esmpy
 - fastparquet
 - flox
 - h5netcdf
@@ -29,6 +33,7 @@ dependencies:
 - jupyterlab
 - jupytext
 - libnetcdf>=4.9.2
+- loguru
 - matplotlib
 - netcdf4
 - numba
@@ -46,6 +51,7 @@ dependencies:
 - seaborn
 - sh
 - spectrum
+- sqlite
 - tokenizers
 - tqdm
 - types-pyyaml
@@ -57,4 +63,4 @@ dependencies:
 - pip:
   - gribscan
 
-name: easy
+name: hackathon_env
