@@ -24,29 +24,26 @@ ARRAY_INDEX=${{SLURM_ARRAY_TASK_ID}}
 python slurm_regrid.py {input_output_files} ${{ARRAY_INDEX}} {paths_per_job}
 """
 
-
-if __name__ == '__main__':
+def main():
     # print(sysrun('squeue -u mmuetz').stdout)
-    basedir = Path('/gws/nopw/j04/hrcm/cache/torau/Lorenzo_u-cu087')
+    basedir = Path('/gws/nopw/j04/hrcm/hackathon/')
     outdir = Path('/gws/nopw/j04/hrcm/mmuetz/Lorenzo_u-cu087')
+
     pp_paths = sorted(basedir.glob('**/*.pp'))
     pp_paths = [p for p in pp_paths if ('OLR' in str(p)) or ('pe_T' in str(p))]
-    # pp_paths = [p for p in pp_paths if ('OLR' in str(p))]
-    # print(pp_paths)
     outpaths = []
     for pp_path in pp_paths:
         varname = pp_path.parts[-2]
-        zoom_outpaths = [
-            outdir / f'{varname}/healpix/z{z}' / ('experimental_' + pp_path.stem + f'.hpz{z}.nc')
-            for z in range(11)[::-1]
-        ]
-        outpaths.append(zoom_outpaths)
+        outpath_tpl = str(outdir / f'{varname}' / 'healpix/z{zoom}' / ('experimental_' + pp_path.stem + '.hpz{zoom}.nc'))
+        outpaths.append(outpath_tpl)
 
     lines = []
-    for inpath, zoom_outpaths in zip(pp_paths, outpaths):
-        for outpath in zoom_outpaths:
+    for inpath, outpath_tpl in zip(pp_paths, outpaths):
+        for zoom in range(11)[::-1]:
+            outpath = Path(outpath_tpl.format(zoom=zoom))
+            # If any file is missing, assume that all files need to be done (for all zoom levels).
             if not outpath.exists():
-                lines.append(','.join(str(p) for p in [inpath] + zoom_outpaths))
+                lines.append(','.join([str(inpath), str(outpath_tpl)]))
                 break
 
     now = pd.Timestamp.now()
@@ -74,6 +71,9 @@ if __name__ == '__main__':
 
     if len(lines):
         print(sysrun(f'sbatch {slurm_script_path}').stdout)
-        # pass
+
+
+if __name__ == '__main__':
+    main()
 
 
