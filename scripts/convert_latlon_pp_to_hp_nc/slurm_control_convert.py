@@ -1,12 +1,13 @@
-from pathlib import Path
 import math
 import subprocess as sp
+from pathlib import Path
 
 import pandas as pd
 
 
 def sysrun(cmd):
     return sp.run(cmd, check=True, shell=True, stdout=sp.PIPE, stderr=sp.PIPE, encoding='utf8')
+
 
 SLURM_SCRIPT = """#!/bin/bash
 #SBATCH --job-name="RGlatlon2hp"
@@ -24,27 +25,29 @@ ARRAY_INDEX=${{SLURM_ARRAY_TASK_ID}}
 python slurm_regrid.py {input_output_files} ${{ARRAY_INDEX}} {paths_per_job}
 """
 
+
 def main():
-    # print(sysrun('squeue -u mmuetz').stdout)
-    basedir = Path('/gws/nopw/j04/hrcm/hackathon/')
-    outdir = Path('/gws/nopw/j04/hrcm/mmuetz/Lorenzo_u-cu087/experimental')
+    # basedir = Path('/gws/nopw/j04/hrcm/hackathon/')
+    basedir = Path('/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/5km-RAL3')
+    outdir = Path('/gws/nopw/j04/hrcm/mmuetz/DYAMOND3_example_data/healpix')
 
     pp_paths = sorted(basedir.glob('**/*.pp'))
-    pp_paths = [p for p in pp_paths if ('OLR' in str(p)) or ('pe_T' in str(p))]
-    outpaths = []
+    pp_paths = [p for p in pp_paths if p.is_file()]
+    # pp_paths = [p for p in pp_paths if ('OLR' in str(p)) or ('pe_T' in str(p))]
+    donepaths = []
     for pp_path in pp_paths:
-        varname = pp_path.parts[-2]
-        outpath_tpl = str(outdir / f'{varname}' / 'healpix/z{zoom}' / (pp_path.stem + '.hpz{zoom}.nc'))
-        outpaths.append(outpath_tpl)
+        donepath = (outdir / '.slurm_done').joinpath(*pp_path.parts[1:]).with_suffix('.done')
+        donepath.parent.mkdir(parents=True, exist_ok=True)
+        donepaths.append(donepath)
 
     lines = []
-    for inpath, outpath_tpl in zip(pp_paths, outpaths):
-        for zoom in range(11)[::-1]:
-            outpath = Path(outpath_tpl.format(zoom=zoom))
-            # If any file is missing, assume that all files need to be done (for all zoom levels).
-            if not outpath.exists():
-                lines.append(','.join([str(inpath), str(outpath_tpl)]))
-                break
+    for inpath, donepath in zip(pp_paths, donepaths):
+        if not donepath.exists():
+            lines.append(','.join([str(inpath), str(donepath)]))
+
+    if not len(lines):
+        print('No files to convert.')
+        return
 
     now = pd.Timestamp.now()
     date_string = now.strftime("%Y%m%d_%H%M%S")
@@ -61,19 +64,11 @@ def main():
     njobs = int(math.ceil(len(lines) / paths_per_job))
 
     slurm_script_path.write_text(
-        SLURM_SCRIPT.format(
-            njobs=njobs,
-            input_output_files=input_output_files,
-            paths_per_job=paths_per_job,
-            date_string=date_string,
-        )
-    )
+    SLURM_SCRIPT.format(njobs=njobs, input_output_files=input_output_files, paths_per_job=paths_per_job,
+        date_string=date_string, ))
 
-    if len(lines):
-        print(sysrun(f'sbatch {slurm_script_path}').stdout)
+    print(sysrun(f'sbatch {slurm_script_path}').stdout)
 
 
 if __name__ == '__main__':
     main()
-
-

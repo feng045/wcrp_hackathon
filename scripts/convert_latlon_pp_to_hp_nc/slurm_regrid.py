@@ -1,40 +1,27 @@
 import sys
+
 sys.path.insert(0, '/home/users/mmuetz/deploy/global_hackathon_tools/dataset_transforms')
 from pathlib import Path
 from um_latlon_pp_to_healpix_nc import UMRegridder
 
-varname2cfname = {
-    'pe_T': 'air_temperature',
-    'OLR': 'toa_outgoing_longwave_flux',
-}
 
 def main(input_output_files, array_index, paths_per_job=10):
+    outdir = Path('/gws/nopw/j04/hrcm/mmuetz/DYAMOND3_example_data/healpix')
+
     print(input_output_files, array_index)
     lines = Path(input_output_files).read_text().split('\n')
-    inout_paths = []
+    indone_paths = []
     for line in lines:
-        inout_paths.append([Path(f) for f in line.split(',')])
+        indone_paths.append([Path(f) for f in line.split(',')])
 
     regridder = UMRegridder('easygems_delaunay')
 
-    for inoutpath in inout_paths[array_index * paths_per_job: (array_index + 1) * paths_per_job]:
-        inpath = inoutpath[0]
-        outpath_tpl = inoutpath[1]
-        varname = inpath.parts[-2]
+    for inpath, donepath in indone_paths[array_index * paths_per_job: (array_index + 1) * paths_per_job]:
+        outpath_tpl = outdir / f'{{varname}}/hpz{{zoom}}/{inpath.stem}.{{varname}}.hpz{{zoom}}.nc'
 
-        tmp_outpath_tpl = outpath_tpl.parent / ('.regrid.tmp.' + outpath_tpl.name)
-        print(varname, inpath, tmp_outpath_tpl)
-        cfname = varname2cfname[varname]
-        tmp_outpath_tpl.parent.mkdir(exist_ok=True, parents=True)
-
-        regridder.run(inpath, tmp_outpath_tpl, cfname)
-
-        for zoom in range(11)[::-1]:
-            tmp_outpath = Path(str(tmp_outpath_tpl).format(zoom=zoom))
-            outpath = Path(str(outpath_tpl).format(zoom=zoom))
-            outpath.parent.mkdir(exist_ok=True, parents=True)
-            print(tmp_outpath, outpath)
-            tmp_outpath.rename(outpath)
+        regridder.run(inpath, outpath_tpl)
+        donepath = Path(donepath)
+        donepath.write_text(f'Converted from {inpath} to {outpath_tpl}')
 
 
 if __name__ == '__main__':
