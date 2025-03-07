@@ -27,14 +27,14 @@ python slurm_regrid.py {input_output_files} ${{ARRAY_INDEX}} {paths_per_job}
 def main():
     # print(sysrun('squeue -u mmuetz').stdout)
     basedir = Path('/gws/nopw/j04/hrcm/hackathon/')
-    outdir = Path('/gws/nopw/j04/hrcm/mmuetz/Lorenzo_u-cu087')
+    outdir = Path('/gws/nopw/j04/hrcm/mmuetz/Lorenzo_u-cu087/experimental')
 
     pp_paths = sorted(basedir.glob('**/*.pp'))
     pp_paths = [p for p in pp_paths if ('OLR' in str(p)) or ('pe_T' in str(p))]
     outpaths = []
     for pp_path in pp_paths:
         varname = pp_path.parts[-2]
-        outpath_tpl = str(outdir / f'{varname}' / 'healpix/z{zoom}' / ('experimental_' + pp_path.stem + '.hpz{zoom}.nc'))
+        outpath_tpl = str(outdir / f'{varname}' / 'healpix/z{zoom}' / (pp_path.stem + '.hpz{zoom}.nc'))
         outpaths.append(outpath_tpl)
 
     lines = []

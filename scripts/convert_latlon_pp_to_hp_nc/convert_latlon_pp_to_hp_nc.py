@@ -1,3 +1,8 @@
+"""
+Contains a UMRegridder class that lets you convert from UM lat/lon .pp to .nc
+Can be run as a command line script with args easy to see in main()
+"""
+
 import sys
 from itertools import product
 from pathlib import Path
@@ -144,7 +149,7 @@ class UMRegridder:
         dsout_tpl = xr.Dataset(coords=da.copy().drop_vars(['latitude', 'longitude']).coords, attrs=da.attrs)
         reduced_dims = [d for d in da.dims if d not in ['latitude', 'longitude']]
         for zoom in self.zooms:
-            outpath = Path(outpath_tpl.format(zoom=zoom))
+            outpath = Path(str(outpath_tpl).format(zoom=zoom))
             dsout = dsout_tpl.copy()
             if zoom != self.max_zoom_level:
                 coarse_regridded_data = np.zeros(dim_shape + [12 * 4 ** zoom])
@@ -165,6 +170,10 @@ class UMRegridder:
 
 
 def main():
+    """Entry point plus some examples. Super simple argument 'parsing' of command line args.
+
+    e.g. python convert_latlon_pp_to_hp_nc.py toa_outgoing_longwave_flux easygems_delaunay
+    """
     if len(sys.argv) == 3 and sys.argv[1] == 'toa_outgoing_longwave_flux':
         method = sys.argv[2]
         inpath = Path('/gws/nopw/j04/hrcm/cache/torau/Lorenzo_u-cu087/OLR/20200101T0000Z_pa000.pp')
