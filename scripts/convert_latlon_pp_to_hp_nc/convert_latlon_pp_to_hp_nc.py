@@ -22,7 +22,7 @@ def hp_coarsen(data):
     Parameters:
         data (np.ndarray): healpix data
     """
-    assert data.size % 12 == 0 and data.size // 12 % 4 == 0, 'Does not look like healpix data'
+    assert data.size % 12 == 0 and (data.size // 12) % 4 == 0, 'Does not look like healpix data'
     assert data.size != 12, 'Cannot coarsen healpix zool level 0'
     # TODO: Need to check how to do regridding when there are nans.
     return np.nanmean(data.reshape(-1, 4), axis=1)
