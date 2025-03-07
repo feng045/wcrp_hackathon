@@ -1,6 +1,7 @@
 import sys
+sys.path.insert(0, '/home/users/mmuetz/deploy/global_hackathon_tools/dataset_transforms')
 from pathlib import Path
-from convert_latlon_pp_to_hp_nc import UMRegridder
+from um_latlon_pp_to_healpix_nc import UMRegridder
 
 varname2cfname = {
     'pe_T': 'air_temperature',
