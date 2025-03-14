@@ -1,5 +1,7 @@
+import json
 import math
 import subprocess as sp
+from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
@@ -26,7 +28,56 @@ python slurm_regrid.py {input_output_files} ${{ARRAY_INDEX}} {paths_per_job}
 """
 
 
+def parse_date_from_pp_path(path):
+    return path.stem.split('.')[-1].split('_')[1]
+
 def main():
+    # basedir = Path('/gws/nopw/j04/hrcm/hackathon/')
+    basedir = Path('/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/5km-RAL3')
+    outdir = Path('/gws/nopw/j04/hrcm/mmuetz/DYAMOND3_example_data/healpix')
+
+    pp_paths = sorted(basedir.glob('glm/field.pp/apve*/**/*.pp'))
+    pp_paths = [p for p in pp_paths if p.is_file()]
+    dates_to_paths = defaultdict(list)
+    for path in pp_paths:
+        dates_to_paths[parse_date_from_pp_path(path)].append(path)
+
+    # Only keep completed downloads.
+    dates_to_paths = {
+        k: v for k, v in dates_to_paths.items()
+        if len(v) == 4
+    }
+
+    todo_dates_to_paths = []
+    donepaths = []
+    for date in dates_to_paths:
+        donepath = (outdir / '.slurm_done'/ f'DYAMOND3_example_data/sample_data_hierarchy/5km-RAL3/{date}.done')
+        donepath.parent.mkdir(parents=True, exist_ok=True)
+        donepaths.append(donepath)
+        if not donepath.exists():
+            todo_dates_to_paths.append((date, [str(p) for p in dates_to_paths[date]], str(donepath)))
+
+    now = pd.Timestamp.now()
+    date_string = now.strftime("%Y%m%d_%H%M%S")
+    input_output_files = Path(f'slurm/input_output_files_{date_string}.json')
+    todo_dates_to_paths = todo_dates_to_paths[:2]
+    print(json.dumps(todo_dates_to_paths, indent=4))
+    with input_output_files.open('w') as f:
+        json.dump(todo_dates_to_paths, f, indent=4)
+
+    slurm_script_path = Path(f'slurm/regrid_script_{date_string}.sh')
+    print(slurm_script_path)
+    paths_per_job = 1
+    njobs = int(math.ceil(len(todo_dates_to_paths) / paths_per_job))
+
+    slurm_script_path.write_text(
+        SLURM_SCRIPT.format(njobs=njobs, input_output_files=input_output_files, paths_per_job=paths_per_job,
+                            date_string=date_string, ))
+
+    print(sysrun(f'sbatch {slurm_script_path}').stdout)
+
+
+def main_old():
     # basedir = Path('/gws/nopw/j04/hrcm/hackathon/')
     basedir = Path('/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/5km-RAL3')
     outdir = Path('/gws/nopw/j04/hrcm/mmuetz/DYAMOND3_example_data/healpix')
