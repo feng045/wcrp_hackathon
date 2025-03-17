@@ -1,3 +1,4 @@
+import sys
 import json
 import math
 import subprocess as sp
@@ -5,6 +6,8 @@ from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
+
+from processing_config import processing_config
 
 
 def sysrun(cmd):
@@ -24,18 +27,40 @@ SLURM_SCRIPT = """#!/bin/bash
 
 ARRAY_INDEX=${{SLURM_ARRAY_TASK_ID}}
 
-python slurm_regrid.py {input_output_files} ${{ARRAY_INDEX}} {paths_per_job}
+python process_tasks.py slurm {tasks_path} ${{ARRAY_INDEX}} {paths_per_job}
 """
 
 
 def parse_date_from_pp_path(path):
     return path.stem.split('.')[-1].split('_')[1]
 
-def main():
-    # basedir = Path('/gws/nopw/j04/hrcm/hackathon/')
-    basedir = Path('/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/5km-RAL3')
-    outdir = Path('/gws/nopw/j04/hrcm/mmuetz/DYAMOND3_example_data/healpix')
 
+def write_tasks_slurm_job(tasks):
+    now = pd.Timestamp.now()
+    date_string = now.strftime("%Y%m%d_%H%M%S")
+
+    tasks_path = Path(f'slurm/tasks_{date_string}.json')
+    # print(json.dumps(tasks, indent=4))
+
+    with tasks_path.open('w') as f:
+        json.dump(tasks, f, indent=4)
+
+    slurm_script_path = Path(f'slurm/regrid_script_{date_string}.sh')
+    paths_per_job = 1
+    njobs = int(math.ceil(len(tasks) / paths_per_job))
+    slurm_script_path.write_text(
+        SLURM_SCRIPT.format(njobs=njobs, tasks_path=tasks_path, paths_per_job=paths_per_job,
+                            date_string=date_string))
+    return slurm_script_path
+
+
+def main():
+    config_key = sys.argv[1]
+    config = processing_config[config_key]
+    basedir = Path('/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/5km-RAL3')
+    donedir = Path('/gws/nopw/j04/hrcm/mmuetz/DYAMOND3_example_data/healpix')
+
+    # Search for pp_paths with a specific date (N.B. filename sensitive).
     pp_paths = sorted(basedir.glob('glm/field.pp/apve*/**/*.pp'))
     pp_paths = [p for p in pp_paths if p.is_file()]
     dates_to_paths = defaultdict(list)
@@ -48,77 +73,44 @@ def main():
         if len(v) == 4
     }
 
-    todo_dates_to_paths = []
-    donepaths = []
+    # Build a list of tasks for all donepaths that don't exist.
+    tasks = []
     for date in dates_to_paths:
-        donepath = (outdir / '.slurm_done'/ f'DYAMOND3_example_data/sample_data_hierarchy/5km-RAL3/{date}.done')
+        donepath = (donedir / '.slurm_done'/ f'DYAMOND3_example_data/sample_data_hierarchy/{config_key}/{date}.done')
         donepath.parent.mkdir(parents=True, exist_ok=True)
-        donepaths.append(donepath)
-        if not donepath.exists():
-            todo_dates_to_paths.append((date, [str(p) for p in dates_to_paths[date]], str(donepath)))
+        if donepath.exists():
+            print(f'{date}: already processed')
+        else:
+            if False and date == config['first_date']:
+                # Be smart about running first task (which sets up .zarr store).
+                init_tasks = [
+                    {
+                        'task_type': 'regrid',
+                        'date': date,
+                        'inpaths': [str(p) for p in dates_to_paths[date]],
+                        'donepath': str(donepath),
+                    }
+                ]
+                slurm_script_path = write_tasks_slurm_job(init_tasks)
+                output = sysrun(f'sbatch {slurm_script_path}').stdout
+                print(output)
+            else:
+                print(f'{date}: processing')
+                tasks.append(
+                    {
+                        'task_type': 'regrid',
+                        'date': date,
+                        'inpaths': [str(p) for p in dates_to_paths[date]],
+                        'donepath': str(donepath),
+                    }
+                )
 
-    now = pd.Timestamp.now()
-    date_string = now.strftime("%Y%m%d_%H%M%S")
-    input_output_files = Path(f'slurm/input_output_files_{date_string}.json')
-    todo_dates_to_paths = todo_dates_to_paths[:2]
-    print(json.dumps(todo_dates_to_paths, indent=4))
-    with input_output_files.open('w') as f:
-        json.dump(todo_dates_to_paths, f, indent=4)
-
-    slurm_script_path = Path(f'slurm/regrid_script_{date_string}.sh')
-    print(slurm_script_path)
-    paths_per_job = 1
-    njobs = int(math.ceil(len(todo_dates_to_paths) / paths_per_job))
-
-    slurm_script_path.write_text(
-        SLURM_SCRIPT.format(njobs=njobs, input_output_files=input_output_files, paths_per_job=paths_per_job,
-                            date_string=date_string, ))
-
-    print(sysrun(f'sbatch {slurm_script_path}').stdout)
-
-
-def main_old():
-    # basedir = Path('/gws/nopw/j04/hrcm/hackathon/')
-    basedir = Path('/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/5km-RAL3')
-    outdir = Path('/gws/nopw/j04/hrcm/mmuetz/DYAMOND3_example_data/healpix')
-
-    pp_paths = sorted(basedir.glob('**/*.pp'))
-    pp_paths = [p for p in pp_paths if p.is_file()]
-    # pp_paths = [p for p in pp_paths if ('OLR' in str(p)) or ('pe_T' in str(p))]
-    donepaths = []
-    for pp_path in pp_paths:
-        donepath = (outdir / '.slurm_done').joinpath(*pp_path.parts[1:]).with_suffix('.done')
-        donepath.parent.mkdir(parents=True, exist_ok=True)
-        donepaths.append(donepath)
-
-    lines = []
-    for inpath, donepath in zip(pp_paths, donepaths):
-        if not donepath.exists():
-            lines.append(','.join([str(inpath), str(donepath)]))
-
-    if not len(lines):
-        print('No files to convert.')
-        return
-
-    now = pd.Timestamp.now()
-    date_string = now.strftime("%Y%m%d_%H%M%S")
-    input_output_files = Path(f'slurm/input_output_files_{date_string}.txt')
-    input_output_files.write_text('\n'.join(lines))
-    print(input_output_files)
-
-    slurm_script_path = Path(f'slurm/regrid_script_{date_string}.sh')
-    print(slurm_script_path)
-
-    # paths_per_job = 5
-    # njobs = 5
-    paths_per_job = 20
-    njobs = int(math.ceil(len(lines) / paths_per_job))
-
-    slurm_script_path.write_text(
-    SLURM_SCRIPT.format(njobs=njobs, input_output_files=input_output_files, paths_per_job=paths_per_job,
-        date_string=date_string, ))
-
-    print(sysrun(f'sbatch {slurm_script_path}').stdout)
+    if len(tasks):
+        slurm_script_path = write_tasks_slurm_job(tasks)
+        print(slurm_script_path)
+        print(sysrun(f'sbatch {slurm_script_path}').stdout)
+    else:
+        print('No tasks to run')
 
 
 if __name__ == '__main__':
