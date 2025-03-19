@@ -1,8 +1,14 @@
 from pathlib import Path
+from functools import partial
 
+from loguru import logger
 import iris
+import iris.cube
+from iris.experimental.stratify import relevel
 import numpy as np
+import pandas as pd
 import s3fs
+import stratify
 import xarray as xr
 import xgcm
 
@@ -31,7 +37,39 @@ def cube_cell_method_is_not_empty(cube):
     return cube.cell_methods != tuple()
 
 
+def iris_relevel_model_level_to_pressure(cube, cubes):
+    logger.debug(f're-level model level to {cube}')
+    p = cubes.extract_cube('air_pressure')
+    cube = cube[-p.shape[0]:]
+    assert (p.coord('time').points == cube.coord('time').points).all()
+
+    z = cubes.extract_cube('geopotential_height')
+    # Direction of pressure_levels must match that of air_pressure/p.
+    pressure_levels = z.coord('pressure').points[::-1] * 100  # convert from hPa to Pa.
+    interpolator = partial(stratify.interpolate,
+                           interpolation=stratify.INTERPOLATE_LINEAR,
+                           extrapolation=stratify.EXTRAPOLATE_LINEAR,
+                           rising=False)
+    new_cube_data = np.zeros((cube.shape[0], len(pressure_levels), cube.shape[2], cube.shape[3]))
+    for i in range(cube.shape[0]):
+        logger.trace(i)
+        regridded_cube = relevel(cube[i], p[i], pressure_levels, interpolator=interpolator)
+        logger.trace(f'regridded_cube.data.sum() {regridded_cube.data.sum()}')
+        new_cube_data[i] = regridded_cube.data
+
+    coords = [(cube.coord('time'), 0), (z.coord('pressure'), 1), (cube.coord('latitude'), 2), (cube.coord('longitude'), 3)]
+    new_cube = iris.cube.Cube(new_cube_data,
+                              long_name=cube.name(),
+                              units=cube.units,
+                              dim_coords_and_dims=coords,
+                              attributes=cube.attributes)
+    logger.trace(new_cube)
+    return new_cube
+
+
 def xgcm_model_level_to_pressure(da: xr.DataArray, ds: xr.Dataset):
+    """No longer used - using iris.experimental.stratify on cubes instead"""
+    raise NotImplemented
     da_p = ds.air_pressure
     # Align da and da_p on time dimension.
     tname1 = [c for c in da.coords if c.startswith('time')][0]
@@ -52,6 +90,8 @@ def xgcm_model_level_to_pressure(da: xr.DataArray, ds: xr.Dataset):
 
     pressure_values = ds.pressure.values
     ds_p = da_p.to_dataset(name='pressure')
+    logger.trace(da_p)
+    logger.trace(da)
 
     # xgcm magic.
     grid = xgcm.Grid(ds_p, coords=dict(pressure={'center': 'model_level_number'}), periodic=False)
@@ -62,6 +102,9 @@ def xgcm_model_level_to_pressure(da: xr.DataArray, ds: xr.Dataset):
         target_data=da_p,
         method='linear',
     )
+    # Needed to rename the coordinate to the same as in ohter DataArrays.
+    da_pressure_levels = da_pressure_levels.rename(air_pressure='pressure')
+    logger.trace(da_pressure_levels)
     return da_pressure_levels
 
 name_map_2d = {
@@ -104,7 +147,8 @@ name_map_3d = {
     'relative_humidity': ('relative_humidity', 'hur'),
     'specific_humidity': ('specific_humidity', 'hus'),
     'air_temperature': ('temperature', 'ta'),
-    'upward_air_velocity': ('upward_air_velocity', 'wa'),
+    # TODO: This is in height coords, not pressure/model levels. What to do?
+    # 'upward_air_velocity': ('upward_air_velocity', 'wa'),
     'air_pressure': ('air_pressure', 'p'),
 }
 drop_vars = [
@@ -148,22 +192,32 @@ processing_config = {
                     root=f's3://sim-data/DYAMOND3_example_data/5km-RAL3/2d/data.2d.z{zoom}.zarr',
                     s3=jasmin_s3, check=False)
                     for zoom in range(11)},
+                # Date range as per Dasha's message.
+                'time': pd.date_range('2020-01-20', '2021-04-01', freq='h'),
+                'time_half': pd.date_range('2020-01-20 00:30', '2021-04-01', freq='h'),
             },
             '3d': {
                 'name_map': name_map_3d,
                 'constraint': [has_dimensions("time", "pressure", "latitude", "longitude"), has_dimensions("time", "model_level_number", "latitude", "longitude")],
-                # 'constraint': has_dimensions("time", "pressure", "latitude", "longitude"),
                 'extra_constraints': {
-                    'specific_humidity': iris.Constraint(name='specific_humidity') & iris.AttributeConstraint(
+                    'relative_humidity': iris.Constraint(name='relative_humidity') & iris.AttributeConstraint(
                         STASH='m01s16i256'),
                 },
                 'stores': {zoom: s3fs.S3Map(
-                    root=f's3://sim-data/DYAMOND3_example_data/5km-RAL3/3d/data.3d.z{zoom}.zarr',
+                    root=f's3://sim-data/DYAMOND3_example_data/5km-RAL3/3d/data.full.v2.3d.z{zoom}.zarr',
                     s3=jasmin_s3, check=False)
                     for zoom in range(11)},
                 'extra_processing': {
-                    'mass_fraction_of_cloud_ice_in_air': xgcm_model_level_to_pressure,
-                }
+                    # Convert these fields from model level to pressure as vertical coord.
+                    'mass_fraction_of_cloud_ice_in_air': iris_relevel_model_level_to_pressure,
+                    'mass_fraction_of_cloud_liquid_water_in_air': iris_relevel_model_level_to_pressure,
+                    'mass_fraction_of_graupel_in_air': iris_relevel_model_level_to_pressure,
+                    'mass_fraction_of_rain_in_air': iris_relevel_model_level_to_pressure,
+                    'mass_fraction_of_cloud_ice_crystals_in_air': iris_relevel_model_level_to_pressure,
+                },
+                # Date range as per Dasha's message, but 3 hourly.
+                'time': pd.date_range('2020-01-20', '2021-04-01', freq='3h'),
+                'time_half': pd.date_range('2020-01-20 00:30', '2021-04-01', freq='3h'),
             },
         }
     },

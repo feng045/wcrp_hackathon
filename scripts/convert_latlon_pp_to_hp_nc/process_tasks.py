@@ -17,6 +17,9 @@ from processing_config import processing_config
 
 iris.FUTURE.date_microseconds = True
 
+logger.remove()
+logger.add(sys.stderr, level="TRACE")
+
 
 def weights_filepath(da, lonname, latname):
     lon0, lonN = da[lonname].values[[0, -1]]
@@ -88,7 +91,7 @@ class ProcessUMFilesToZarrStore:
                 all_cubes = self.load_cubes(inpaths)
                 for group, cubes in all_cubes.items():
                     tmppath = self.tmp_dir / f'{date}.{group}.nc'
-                    logger.debug(f'save {group} {tmppath}')
+                    logger.info(f'save {group} {tmppath}')
                     tmppath.parent.mkdir(exist_ok=True, parents=True)
                     if not tmppath.exists():
                         for cube in cubes:
@@ -99,8 +102,9 @@ class ProcessUMFilesToZarrStore:
             for group, path in ncpaths.items():
                 if group != '3d':
                     continue
-                logger.debug(f'opening dataset {group}: {path}')
+                logger.info(f'opening dataset {group}: {path}')
                 all_ds[group] = xr.open_dataset(path, decode_timedelta=False)
+                logger.trace(all_ds[group])
         self.all_ds = all_ds
 
         all_hp_ds = {}
@@ -114,36 +118,32 @@ class ProcessUMFilesToZarrStore:
                 weights_path = weights_filepath(da, lonname, latname)
                 if not Path(weights_path).exists():
                     logger.info(f'creating weights file for {da.name}')
-                    logger.debug(da)
+                    logger.trace(da)
                     gen_weights(da, 10, lonname, latname, weights_path)
 
         for group, ds in all_ds.items():
             if group != '3d':
                 continue
 
-            logger.debug(f'creating {group} healpix dataset')
+            logger.info(f'creating {group} healpix dataset')
+            logger.debug(ds.mass_fraction_of_cloud_ice_in_air.values.sum())
             hp_ds = self.regrid_to_hp(group, ds)
 
-            logger.debug(hp_ds)
+            logger.trace(hp_ds)
+            logger.debug(hp_ds.cli.values.sum())
             all_hp_ds[group] = hp_ds
-            if np.isnan(hp_ds['rlut'].values).all():
-                raise Exception('rlut is all Nans')
 
         for hp_ds_zmax in all_hp_ds.values():
             coarse_hp_ds = self.calc_coarse_hp_ds(hp_ds_zmax)
-            if np.isnan(coarse_hp_ds[10]['rlut'].values).all():
-                raise Exception('rlut is all Nans')
 
             if date == self.first_date:
                 for zoom, hp_ds in coarse_hp_ds.items():
                     logger.info(f'creating zarr store for {zoom}')
                     self.create_empty_zarr_store(group, zoom, hp_ds)
-                if np.isnan(coarse_hp_ds[10]['rlut'].values).all():
-                    raise Exception('rlut is all Nans')
 
             for zoom, hp_ds in coarse_hp_ds.items():
-                if np.isnan(hp_ds['rlut'].values).all():
-                    raise Exception('rlut is all Nans')
+                logger.trace(hp_ds)
+                logger.debug(hp_ds.cli.values.sum())
                 self.populate_zarr_store(group, zoom, hp_ds)
 
         self.all_hp_ds = all_hp_ds
@@ -156,19 +156,19 @@ class ProcessUMFilesToZarrStore:
 
     def load_cubes(self, inpaths):
         """load cubes from paths, combine into a large CubeList, then extract groups for further processing."""
-        all_cubes = {}
+        stream_cubes = {}
 
         for path in inpaths:
             stream_name = Path(path).parts[-2]
             logger.info(f'load {path}')
             cubes = iris.load(path)
-            all_cubes[stream_name] = cubes
+            stream_cubes[stream_name] = cubes
 
         cubes = iris.cube.CubeList()
-        for group, v in all_cubes.items():
+        for group, v in stream_cubes.items():
             cubes.extend(v)
 
-        all_cubes = {}
+        group_cubes = {}
         for group_name, group in self.groups.items():
             filtered_cubes = cubes.extract(group['constraint'])
             name_map = group['name_map']
@@ -178,8 +178,18 @@ class ProcessUMFilesToZarrStore:
                 filtered_cubes = filtered_cubes.extract(extra_constraints)
 
             logger.debug(f'extracted {len(filtered_cubes)} cubes from {group_name}')
-            all_cubes[group_name] = filtered_cubes
-        return all_cubes
+            if 'extra_processing' in self.groups[group_name]:
+                for name, fn in self.groups[group_name]['extra_processing'].items():
+                    logger.info(f'applying {fn} to {name}')
+                    cube = cubes.extract_cube(name)
+                    cube_proc = fn(cube, cubes)
+                    filtered_cubes.remove(cube)
+                    filtered_cubes.append(cube_proc)
+
+            if group_name == '3d':
+                filtered_cubes.remove(cubes.extract_cube('air_pressure'))
+            group_cubes[group_name] = filtered_cubes
+        return group_cubes
 
     def regrid_to_hp(self, group, ds):
         hp_ds = xr.Dataset()
@@ -190,15 +200,9 @@ class ProcessUMFilesToZarrStore:
             # Is there a better/more robust way to do this?
             if 'latitude' not in da.coords and 'latitude_0' not in da.coords:
                 continue
-            if name == 'pressure':
+            if name in ['pressure']:
                 continue
             data_vars_to_regrid[name] = da
-
-        for name, fn in self.groups[group]['extra_processing'].items():
-            logger.info(f'applying {fn} to {name}')
-            da = ds[name]
-            da_processed = fn(da, ds)
-            ds[name] = da_processed
 
         for i, (name, da) in enumerate(data_vars_to_regrid.items()):
             long_name, short_name = self.groups[group]['name_map'][name]
@@ -218,9 +222,9 @@ class ProcessUMFilesToZarrStore:
             else:
                 regridder = UMLatLon2HealpixRegridder(method=self.regrid_method, weights_path=None)
 
-            logger.debug('  - NaNs for time for orig data:', np.isnan(da.values).sum(axis=(1, 2)))
+            logger.debug(f'  - NaNs for time for orig data: {np.isnan(da.values).sum()}')
             hp_da = regridder.regrid(da, lonname, latname)
-            logger.debug('  - NaNs for time for hp data:', np.isnan(hp_da.values).sum(axis=1))
+            logger.debug(f'  - NaNs for time for hp data: {np.isnan(hp_da.values).sum()}')
             if np.isnan(hp_da.values).all():
                 raise Exception(f'{short_name} hp all values are NaN')
             hp_da.rename(short_name)
@@ -239,6 +243,7 @@ class ProcessUMFilesToZarrStore:
         # after it has run (and all zoom levels have been combined into datasets).
         # DONE: because I was renaming dims with different values to the same name!
         coarse_hp_ds = defaultdict(xr.Dataset)
+        logger.trace(hp_ds_zmax)
         for name, da_zmax in hp_ds_zmax.data_vars.items():
             half_time = find_halfpast_time(hp_ds_zmax)
             timename = [c for c in da_zmax.coords if c.startswith('time')][0]
@@ -251,13 +256,13 @@ class ProcessUMFilesToZarrStore:
             coarse_das = UMLatLon2HealpixRegridder.coarsen(da_zmax)
             for zoom, da in coarse_das.items():
                 coarse_hp_ds[zoom][name] = da
+        logger.trace(coarse_hp_ds[10])
         return coarse_hp_ds
 
     def create_empty_zarr_store(self, group, zoom, hp_ds):
-        # TODO: add to config.
-        # Date range as per Dasha's message.
-        time = pd.date_range('2020-01-20', '2021-04-01', freq='h')
-        time_half = pd.date_range('2020-01-20 00:30', '2021-04-01', freq='h')
+        time = self.groups[group]['time']
+        time_half = self.groups[group]['time_half']
+
         ds_tpl = xr.Dataset()
         half_time = find_halfpast_time(hp_ds)
         for name, da in hp_ds.data_vars.items():
@@ -275,7 +280,11 @@ class ProcessUMFilesToZarrStore:
                 zarr_time = time
             dims = [zarr_time_name] + reduced_dims
             coords = {zarr_time_name: zarr_time, 'cell': hp_ds.cell}
-            dummies = dask.array.zeros((len(zarr_time), *da.shape[1:]), chunks=(1, 4 ** 10))
+            if da.ndim == 2:
+                chunks = (1, 4**10)
+            elif da.ndim == 3:
+                chunks = (1, 5, 4 ** 10)
+            dummies = dask.array.zeros((len(zarr_time), *da.shape[1:]), chunks=chunks)
 
             da = da.rename(**{timename: zarr_time_name})
             da_tpl = xr.DataArray(dummies, dims=dims, coords=coords, name=name, attrs=da.attrs)
@@ -301,8 +310,12 @@ class ProcessUMFilesToZarrStore:
             if np.isnan(da.values).all():
                 logger.debug(da)
                 raise Exception(f'da {da.name} is full of NaNs')
-            da.to_zarr(self.groups[group]['stores'][zoom],
-                       region={zarr_time_name: slice(idx, idx + len(da[zarr_time_name])), 'cell': slice(None)})
+            if group == '2d':
+                da.to_zarr(self.groups[group]['stores'][zoom],
+                           region={zarr_time_name: slice(idx, idx + len(da[zarr_time_name])), 'cell': slice(None)})
+            elif group == '3d':
+                da.to_zarr(self.groups[group]['stores'][zoom],
+                           region={zarr_time_name: slice(idx, idx + len(da[zarr_time_name])), 'pressure': slice(None), 'cell': slice(None)})
 
 
 def slurm_run(tasks_path, array_index, paths_per_job=10):
