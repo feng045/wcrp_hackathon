@@ -1,16 +1,16 @@
-from pathlib import Path
 from functools import partial
+from pathlib import Path
 
-from loguru import logger
 import iris
 import iris.cube
-from iris.experimental.stratify import relevel
 import numpy as np
 import pandas as pd
 import s3fs
 import stratify
 import xarray as xr
 import xgcm
+from iris.experimental.stratify import relevel
+from loguru import logger
 
 TMPDIR = Path('/work/scratch-nopw2/mmuetz/wcrp_hackathon/')
 
@@ -57,7 +57,8 @@ def iris_relevel_model_level_to_pressure(cube, cubes):
         logger.trace(f'regridded_cube.data.sum() {regridded_cube.data.sum()}')
         new_cube_data[i] = regridded_cube.data
 
-    coords = [(cube.coord('time'), 0), (z.coord('pressure'), 1), (cube.coord('latitude'), 2), (cube.coord('longitude'), 3)]
+    coords = [(cube.coord('time'), 0), (z.coord('pressure'), 1), (cube.coord('latitude'), 2),
+              (cube.coord('longitude'), 3)]
     new_cube = iris.cube.Cube(new_cube_data,
                               long_name=cube.name(),
                               units=cube.units,
@@ -106,6 +107,7 @@ def xgcm_model_level_to_pressure(da: xr.DataArray, ds: xr.Dataset):
     da_pressure_levels = da_pressure_levels.rename(air_pressure='pressure')
     logger.trace(da_pressure_levels)
     return da_pressure_levels
+
 
 name_map_2d = {
     'air_pressure_at_sea_level': ('air_pressure_at_mean_sea_level', 'psl'),
@@ -198,7 +200,8 @@ processing_config = {
             },
             '3d': {
                 'name_map': name_map_3d,
-                'constraint': [has_dimensions("time", "pressure", "latitude", "longitude"), has_dimensions("time", "model_level_number", "latitude", "longitude")],
+                'constraint': [has_dimensions("time", "pressure", "latitude", "longitude"),
+                               has_dimensions("time", "model_level_number", "latitude", "longitude")],
                 'extra_constraints': {
                     'relative_humidity': iris.Constraint(name='relative_humidity') & iris.AttributeConstraint(
                         STASH='m01s16i256'),

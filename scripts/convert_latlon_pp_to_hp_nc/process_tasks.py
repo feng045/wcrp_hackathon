@@ -4,12 +4,12 @@ from collections import defaultdict
 from io import StringIO
 from pathlib import Path
 
-from loguru import logger
 import dask.array
 import iris
 import numpy as np
 import pandas as pd
 import xarray as xr
+from loguru import logger
 
 sys.path.insert(0, '/home/users/mmuetz/deploy/global_hackathon_tools/dataset_transforms')
 from um_latlon_pp_to_healpix_nc import UMLatLon2HealpixRegridder, gen_weights
@@ -281,7 +281,7 @@ class ProcessUMFilesToZarrStore:
             dims = [zarr_time_name] + reduced_dims
             coords = {zarr_time_name: zarr_time, 'cell': hp_ds.cell}
             if da.ndim == 2:
-                chunks = (1, 4**10)
+                chunks = (1, 4 ** 10)
             elif da.ndim == 3:
                 chunks = (1, 5, 4 ** 10)
             dummies = dask.array.zeros((len(zarr_time), *da.shape[1:]), chunks=chunks)
@@ -315,7 +315,8 @@ class ProcessUMFilesToZarrStore:
                            region={zarr_time_name: slice(idx, idx + len(da[zarr_time_name])), 'cell': slice(None)})
             elif group == '3d':
                 da.to_zarr(self.groups[group]['stores'][zoom],
-                           region={zarr_time_name: slice(idx, idx + len(da[zarr_time_name])), 'pressure': slice(None), 'cell': slice(None)})
+                           region={zarr_time_name: slice(idx, idx + len(da[zarr_time_name])), 'pressure': slice(None),
+                                   'cell': slice(None)})
 
 
 def slurm_run(tasks_path, array_index, paths_per_job=10):
