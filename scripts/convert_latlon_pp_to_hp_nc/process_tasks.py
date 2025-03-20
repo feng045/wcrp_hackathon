@@ -239,19 +239,13 @@ class ProcessUMFilesToZarrStore:
 
         return hp_ds
 
-    def calc_coarse_hp_ds(self, hp_ds_zmax):
+    @staticmethod
+    def calc_coarse_hp_ds(hp_ds_zmax):
         # after it has run (and all zoom levels have been combined into datasets).
         # DONE: because I was renaming dims with different values to the same name!
         coarse_hp_ds = defaultdict(xr.Dataset)
         logger.trace(hp_ds_zmax)
         for name, da_zmax in hp_ds_zmax.data_vars.items():
-            half_time = find_halfpast_time(hp_ds_zmax)
-            timename = [c for c in da_zmax.coords if c.startswith('time')][0]
-            if timename == half_time:
-                zarr_time_name = 'time_halfpast'
-            else:
-                zarr_time_name = 'time'
-            # da_zmax = da_zmax.rename(**{timename: zarr_time_name})
             logger.info(f'coarsening {name}')
             coarse_das = UMLatLon2HealpixRegridder.coarsen(da_zmax)
             for zoom, da in coarse_das.items():
