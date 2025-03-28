@@ -69,12 +69,13 @@ class ProcessUMFilesToZarrStore:
         else:
             donepath = None
 
-        if False:
+        if True:
             all_cubes = self.load_cubes(inpaths)
             all_ds = {}
             for group, cubes in all_cubes.items():
                 ds = xr.Dataset()
                 for cube in cubes:
+                    logger.debug(f'convert {cube.name()} from iris to xr')
                     ds[cube.name()] = xr.DataArray.from_iris(cube)
                 all_ds[group] = ds
         else:
@@ -100,8 +101,8 @@ class ProcessUMFilesToZarrStore:
 
             all_ds = {}
             for group, path in ncpaths.items():
-                if group != '3d':
-                    continue
+                # if group != '3d':
+                #     continue
                 logger.info(f'opening dataset {group}: {path}')
                 all_ds[group] = xr.open_dataset(path, decode_timedelta=False)
                 logger.trace(all_ds[group])
@@ -122,8 +123,8 @@ class ProcessUMFilesToZarrStore:
                     gen_weights(da, 10, lonname, latname, weights_path)
 
         for group, ds in all_ds.items():
-            if group != '3d':
-                continue
+            # if group != '3d':
+            #     continue
 
             logger.info(f'creating {group} healpix dataset')
             logger.debug(ds.mass_fraction_of_cloud_ice_in_air.values.sum())
@@ -160,6 +161,9 @@ class ProcessUMFilesToZarrStore:
 
         for path in inpaths:
             stream_name = Path(path).parts[-2]
+            # TODO: don't leave in. don't have perms for these right now.
+            if stream_name == 'apverc.pp':
+                continue
             logger.info(f'load {path}')
             cubes = iris.load(path)
             stream_cubes[stream_name] = cubes
@@ -178,6 +182,7 @@ class ProcessUMFilesToZarrStore:
                 filtered_cubes = filtered_cubes.extract(extra_constraints)
 
             logger.debug(f'extracted {len(filtered_cubes)} cubes from {group_name}')
+            logger.trace('\n'.join([str((c.name(), c.dtype)) for c in filtered_cubes]))
             if 'extra_processing' in self.groups[group_name]:
                 for name, fn in self.groups[group_name]['extra_processing'].items():
                     logger.info(f'applying {fn} to {name}')
@@ -273,12 +278,15 @@ class ProcessUMFilesToZarrStore:
                 zarr_time_name = 'time'
                 zarr_time = time
             dims = [zarr_time_name] + reduced_dims
-            coords = {zarr_time_name: zarr_time, 'cell': hp_ds.cell}
             if da.ndim == 2:
+                coords = {zarr_time_name: zarr_time, 'cell': hp_ds.cell}
                 chunks = (1, 4 ** 10)
             elif da.ndim == 3:
+                coords = {zarr_time_name: zarr_time, 'pressure': hp_ds.pressure, 'cell': hp_ds.cell}
                 chunks = (1, 5, 4 ** 10)
-            dummies = dask.array.zeros((len(zarr_time), *da.shape[1:]), chunks=chunks)
+            else:
+                raise Exception('ndim must be 2 or 3')
+            dummies = dask.array.zeros((len(zarr_time), *da.shape[1:]), dtype=np.float32, chunks=chunks)
 
             da = da.rename(**{timename: zarr_time_name})
             da_tpl = xr.DataArray(dummies, dims=dims, coords=coords, name=name, attrs=da.attrs)

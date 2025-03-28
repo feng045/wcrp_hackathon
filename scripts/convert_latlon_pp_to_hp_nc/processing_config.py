@@ -207,7 +207,7 @@ processing_config = {
                         STASH='m01s16i256'),
                 },
                 'stores': {zoom: s3fs.S3Map(
-                    root=f's3://sim-data/DYAMOND3_example_data/5km-RAL3/3d/data.full.v2.3d.z{zoom}.zarr',
+                    root=f's3://sim-data/DYAMOND3_example_data/5km-RAL3/3d/data.full.v3.3d.z{zoom}.zarr',
                     s3=jasmin_s3, check=False)
                     for zoom in range(11)},
                 'extra_processing': {
