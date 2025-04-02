@@ -48,12 +48,13 @@ def find_halfpast_time(ds):
 
 
 class ProcessUMFilesToZarrStore:
-    def __init__(self, config):
+    def __init__(self, config, save_nc=False):
         self.first_date = config['first_date']
         self.tmp_dir = config['tmp_dir']
         self.drop_vars = config['drop_vars']
         self.groups = config['groups']
         self.regrid_method = config['regrid_method']
+        self.save_nc = save_nc
 
         self.all_ds = None
         self.all_hp_ds = None
@@ -69,7 +70,7 @@ class ProcessUMFilesToZarrStore:
         else:
             donepath = None
 
-        if True:
+        if self.save_nc:
             all_cubes = self.load_cubes(inpaths)
             all_ds = {}
             for group, cubes in all_cubes.items():
@@ -161,9 +162,6 @@ class ProcessUMFilesToZarrStore:
 
         for path in inpaths:
             stream_name = Path(path).parts[-2]
-            # TODO: don't leave in. don't have perms for these right now.
-            if stream_name == 'apverc.pp':
-                continue
             logger.info(f'load {path}')
             cubes = iris.load(path)
             stream_cubes[stream_name] = cubes

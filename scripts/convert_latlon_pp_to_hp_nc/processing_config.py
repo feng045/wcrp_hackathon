@@ -1,112 +1,24 @@
-from functools import partial
 from pathlib import Path
 
 import iris
 import iris.cube
-import numpy as np
 import pandas as pd
-import s3fs
-import stratify
-import xarray as xr
-import xgcm
-from iris.experimental.stratify import relevel
-from loguru import logger
 
 TMPDIR = Path('/work/scratch-nopw2/mmuetz/wcrp_hackathon/')
-
-s3cfg = dict([l.split(' = ') for l in Path('/home/users/mmuetz/.s3cfg').read_text().split('\n') if l])
-jasmin_s3 = s3fs.S3FileSystem(
-    anon=False,
-    secret=s3cfg['secret_key'],
-    key=s3cfg['access_key'],
-    client_kwargs={'endpoint_url': 'http://hackathon-o.s3.jc.rl.ac.uk'}
-)
 
 
 def has_dimensions(*dims):
     """Returns an Iris constraint that filters cubes based on dimensions."""
 
     def dim_filter(cube):
-        cube_dims = [c.name() for c in cube.dim_coords]
-        return set(cube_dims) == set(dims)
+        cube_dims = tuple([c.name() for c in cube.dim_coords])
+        return cube_dims == dims
 
     return iris.Constraint(cube_func=dim_filter)
 
 
 def cube_cell_method_is_not_empty(cube):
     return cube.cell_methods != tuple()
-
-
-def iris_relevel_model_level_to_pressure(cube, cubes):
-    logger.debug(f're-level model level to {cube}')
-    p = cubes.extract_cube('air_pressure')
-    cube = cube[-p.shape[0]:]
-    assert (p.coord('time').points == cube.coord('time').points).all()
-
-    z = cubes.extract_cube('geopotential_height')
-    # Direction of pressure_levels must match that of air_pressure/p.
-    pressure_levels = z.coord('pressure').points[::-1] * 100  # convert from hPa to Pa.
-    interpolator = partial(stratify.interpolate,
-                           interpolation=stratify.INTERPOLATE_LINEAR,
-                           extrapolation=stratify.EXTRAPOLATE_LINEAR,
-                           rising=False)
-    new_cube_data = np.zeros((cube.shape[0], len(pressure_levels), cube.shape[2], cube.shape[3]))
-    for i in range(cube.shape[0]):
-        logger.trace(i)
-        regridded_cube = relevel(cube[i], p[i], pressure_levels, interpolator=interpolator)
-        logger.trace(f'regridded_cube.data.sum() {regridded_cube.data.sum()}')
-        new_cube_data[i] = regridded_cube.data
-
-    coords = [(cube.coord('time'), 0), (z.coord('pressure'), 1), (cube.coord('latitude'), 2),
-              (cube.coord('longitude'), 3)]
-    new_cube = iris.cube.Cube(new_cube_data,
-                              long_name=cube.name(),
-                              units=cube.units,
-                              dim_coords_and_dims=coords,
-                              attributes=cube.attributes)
-    logger.trace(new_cube)
-    return new_cube
-
-
-def xgcm_model_level_to_pressure(da: xr.DataArray, ds: xr.Dataset):
-    """No longer used - using iris.experimental.stratify on cubes instead"""
-    raise NotImplemented
-    da_p = ds.air_pressure
-    # Align da and da_p on time dimension.
-    tname1 = [c for c in da.coords if c.startswith('time')][0]
-    tname2 = [c for c in da_p.coords if c.startswith('time')][0]
-    t1 = da[tname1]
-    t2 = da_p[tname2]
-    assert len(t1) > len(t2)
-    idx = np.argmin(np.abs(t1.values - t2.values[0]))
-    # print(idx)
-    s = slice(idx, idx + len(t2))
-    assert (t1[s].values == t2.values).all()
-
-    # Slice da to match on time dim.
-    da = da.isel(**{tname1: s})
-    # Rename time dim on da_p and convert Pa to hPa.
-    da_p = da_p.rename(**{tname2: tname1})
-    da_p.values /= 100
-
-    pressure_values = ds.pressure.values
-    ds_p = da_p.to_dataset(name='pressure')
-    logger.trace(da_p)
-    logger.trace(da)
-
-    # xgcm magic.
-    grid = xgcm.Grid(ds_p, coords=dict(pressure={'center': 'model_level_number'}), periodic=False)
-    da_pressure_levels = grid.transform(
-        da,
-        'pressure',
-        pressure_values,
-        target_data=da_p,
-        method='linear',
-    )
-    # Needed to rename the coordinate to the same as in ohter DataArrays.
-    da_pressure_levels = da_pressure_levels.rename(air_pressure='pressure')
-    logger.trace(da_pressure_levels)
-    return da_pressure_levels
 
 
 name_map_2d = {
@@ -124,7 +36,8 @@ name_map_2d = {
     'surface_air_pressure': ('surface_air_pressure', 'ps'),
     'surface_upward_latent_heat_flux': ('surface_downward_latent_heat_flux', 'hflsd'),
     'surface_upward_sensible_heat_flux': ('surface_downward_sensible_heat_flux', 'hfssd'),
-    'surface_downwelling_longwave_flux_in_air': ('surface_downwelling_longwave_flux_in_air', 'rldt'),
+    # Changed from rldt as per tobi's message on Mattermost.
+    'surface_downwelling_longwave_flux_in_air': ('surface_downwelling_longwave_flux_in_air', 'rlds'),
     'surface_downwelling_longwave_flux_in_air_assuming_clear_sky': (
         'surface_downwelling_longwave_flux_in_air_clear_sky', 'rldscs'),
     'surface_downwelling_shortwave_flux_in_air': ('surface_downwelling_shortwave_flux_in_air', 'rsds'),
@@ -137,22 +50,61 @@ name_map_2d = {
     'toa_outgoing_shortwave_flux': ('toa_outgoing_shortwave_flux', 'rsut'),
     'toa_outgoing_shortwave_flux_assuming_clear_sky': ('toa_outgoing_shortwave_flux_clear_sky', 'rsutcs'),
 }
+
 name_map_3d = {
     'x_wind': ('eastward_wind', 'ua'),
     'geopotential_height': ('geopotential height', 'zg'),
+    'y_wind': ('northtward_wind', 'va'),
+    'relative_humidity': ('relative_humidity', 'hur'),
+    'specific_humidity': ('specific_humidity', 'hus'),
+    'air_temperature': ('temperature', 'ta'),
+    'upward_air_velocity': ('upward_air_velocity', 'wa'),
+}
+
+name_map_3d_ml = {
     'mass_fraction_of_cloud_ice_in_air': ('mass_fraction_of_cloud_ice_in_air', 'cli'),
     'mass_fraction_of_cloud_liquid_water_in_air': ('mass_fraction_of_cloud_liquid_water_in_air', 'clw'),
     'mass_fraction_of_graupel_in_air': ('mass_fraction_of_graupel_in_air', 'qg'),
     'mass_fraction_of_rain_in_air': ('mass_fraction_of_rain_in_air', 'qr'),
     'mass_fraction_of_cloud_ice_crystals_in_air': ('mass_fraction_of_snow_water_in_air', 'qs'),
-    'y_wind': ('northtward_wind', 'va'),
-    'relative_humidity': ('relative_humidity', 'hur'),
-    'specific_humidity': ('specific_humidity', 'hus'),
-    'air_temperature': ('temperature', 'ta'),
-    # TODO: This is in height coords, not pressure/model levels. What to do?
-    # 'upward_air_velocity': ('upward_air_velocity', 'wa'),
-    'air_pressure': ('air_pressure', 'p'),
 }
+
+chunks2d = {
+    # z10 has to have no chunking over time.
+    10: (1, 4 ** 10),  # 12 chunks per time.
+    # Increase temporal at same rate as reducing spatial.
+    9: (4, 4 ** 9),
+    8: (4 ** 2, 4 ** 8),
+    7: (4 ** 3, 4 ** 7),
+    # Transition to 3 chunks per time.
+    6: (4 ** 3, 4 ** 7),
+    # Transition to 1 chunk per time.
+    5: (4 ** 3, 12 * 4 ** 5),
+    4: (4 ** 4, 12 * 4 ** 4),
+    3: (4 ** 5, 12 * 4 ** 3),
+    2: (4 ** 6, 12 * 4 ** 2),
+    1: (4 ** 7, 12 * 4 ** 1),
+    0: (4 ** 8, 12 * 4 ** 0),
+}
+
+chunks3d = {
+    # z10 has to have no chunking over time.
+    10: (1, 5, 4 ** 9),  # 48 chunks per time.
+    9: (4, 5, 4 ** 8),
+    8: (4 ** 2, 5, 4 ** 7),
+    7: (4 ** 3, 5, 4 ** 6),
+    # transition to fewer chunks per time.
+    6: (4 ** 3, 5, 4 ** 6),  # 12 chunks per time
+    5: (4 ** 3, 5, 12 * 4 ** 4),
+    # transition to 1 chunk per time.
+    4: (4 ** 3, 5, 12 * 4 ** 4),
+    3: (4 ** 4, 5, 12 * 4 ** 3),
+    # increase number pressure levels.
+    2: (4 ** 4, 25, 12 * 4 ** 2),
+    1: (4 ** 5, 25, 12 * 4 ** 1),
+    0: (4 ** 6, 25, 12 * 4 ** 0),
+}
+
 drop_vars = [
     'latitude_0',
     'longitude_0',
@@ -169,16 +121,30 @@ drop_vars = [
     'time_1_bnds',
     'time_0_bnds',
     'forecast_period_1_bnds',
+    'surface_altitude',
+    'level_height',
+    'sigma',
+    'altitude',
 ]
+
+time2d = pd.date_range('2020-01-20', '2021-04-01', freq='h')
+time3d = pd.date_range('2020-01-20', '2021-04-01', freq='3h')
+
+vn5kmRAL3 = 'v1'
 
 processing_config = {
     '5km-RAL3': {
+        'basedir': Path('/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/5km-RAL3'),
+        'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done'),
+        'donepath_tpl': f'5km-RAL3/{{task}}_{{date}}.{vn5kmRAL3}.done',
         'first_date': '20200120T00',
-        'tmp_dir': TMPDIR / 'DYAMOND3_example_data/5km-RAL3',
-        'drop_vars': drop_vars,
+        'zarr_store_url_tpl': f's3://sim-data/5km-RAL3/dev/data.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
+        'drop_vars': drop_vars,  # TODO: still needed?
         'regrid_method': 'easygems_delaunay',
         'groups': {
             '2d': {
+                'time': time2d,
+                'zarr_store': '2d',
                 'name_map': name_map_2d,
                 'constraint': has_dimensions("time", "latitude", "longitude"),
                 'extra_constraints': {
@@ -190,46 +156,47 @@ processing_config = {
                         name='toa_outgoing_shortwave_flux') & iris.AttributeConstraint(
                         STASH='m01s01i208'),
                 },
-                'stores': {zoom: s3fs.S3Map(
-                    root=f's3://sim-data/DYAMOND3_example_data/5km-RAL3/2d/data.2d.z{zoom}.zarr',
-                    s3=jasmin_s3, check=False)
-                    for zoom in range(11)},
-                # Date range as per Dasha's message.
-                'time': pd.date_range('2020-01-20', '2021-04-01', freq='h'),
-                'time_half': pd.date_range('2020-01-20 00:30', '2021-04-01', freq='h'),
+                'extra_attrs': {
+                    'stratiform_rainfall_flux': {'notes':
+                                                 'hourly mean - time index shifted from half past the hour to the following hour'},
+                    'stratiform_snowfall_flux': {'notes':
+                                                 'hourly mean - time index shifted from half past the hour to the following hour'},
+                },
+                'chunks': chunks2d,
             },
             '3d': {
+                'time': time3d,
+                'zarr_store': '3d',
                 'name_map': name_map_3d,
-                'constraint': [has_dimensions("time", "pressure", "latitude", "longitude"),
-                               has_dimensions("time", "model_level_number", "latitude", "longitude")],
+                'constraint': has_dimensions("time", "pressure", "latitude", "longitude"),
                 'extra_constraints': {
                     'relative_humidity': iris.Constraint(name='relative_humidity') & iris.AttributeConstraint(
                         STASH='m01s16i256'),
                 },
-                'stores': {zoom: s3fs.S3Map(
-                    root=f's3://sim-data/DYAMOND3_example_data/5km-RAL3/3d/data.full.v3.3d.z{zoom}.zarr',
-                    s3=jasmin_s3, check=False)
-                    for zoom in range(11)},
-                'extra_processing': {
-                    # Convert these fields from model level to pressure as vertical coord.
-                    'mass_fraction_of_cloud_ice_in_air': iris_relevel_model_level_to_pressure,
-                    'mass_fraction_of_cloud_liquid_water_in_air': iris_relevel_model_level_to_pressure,
-                    'mass_fraction_of_graupel_in_air': iris_relevel_model_level_to_pressure,
-                    'mass_fraction_of_rain_in_air': iris_relevel_model_level_to_pressure,
-                    'mass_fraction_of_cloud_ice_crystals_in_air': iris_relevel_model_level_to_pressure,
-                },
-                # Date range as per Dasha's message, but 3 hourly.
-                'time': pd.date_range('2020-01-20', '2021-04-01', freq='3h'),
-                'time_half': pd.date_range('2020-01-20 00:30', '2021-04-01', freq='3h'),
+                'extra_attrs': {},
+                'chunks': chunks3d,
+            },
+            '3d_ml': {
+                'time': time3d,
+                'zarr_store': '3d',
+                'name_map': name_map_3d_ml,
+                'constraint': has_dimensions("time", "model_level_number", "latitude", "longitude"),
+                'extra_constraints': {},
+                'extra_attrs': {n: {
+                    'notes': 'interpolated from UM model levels to pressure levels using iris.experimental.stratify'}
+                                for n in name_map_3d_ml.keys()},
+                'chunks': chunks3d,
+                'interpolate_model_levels_to_pressure': True,
             },
         }
     },
 }
 
-processing_config['5km-RAL3-e2g'] = processing_config['5km-RAL3'].copy()
-processing_config['5km-RAL3-e2g']['regrid_method'] = 'earth2grid'
-processing_config['5km-RAL3-e2g']['groups']['2d']['stores'] = {
-    zoom: s3fs.S3Map(
-        root=f's3://sim-data/DYAMOND3_example_data/5km-RAL3/2d/data.2d.z{zoom}.earth2grid.zarr',
-        s3=jasmin_s3, check=False)
-    for zoom in range(11)}
+# processing_config['5km-RAL3-e2g'] = processing_config['5km-RAL3'].copy()
+# processing_config['5km-RAL3-e2g']['regrid_method'] = 'earth2grid'
+# processing_config['5km-RAL3-e2g']['groups']['2d']['stores'] = {
+#     zoom: s3fs.S3Map(
+#         root=f's3://sim-data/DYAMOND3_example_data/5km-RAL3/2d/data.2d.z{zoom}.earth2grid.zarr',
+#         s3=jasmin_s3, check=False)
+#     for zoom in range(11)}
+#
