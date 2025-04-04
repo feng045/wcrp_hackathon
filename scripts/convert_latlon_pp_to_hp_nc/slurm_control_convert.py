@@ -1,11 +1,11 @@
-import sys
 import json
 import subprocess as sp
+import sys
 from collections import defaultdict
 from pathlib import Path
 
-from loguru import logger
 import pandas as pd
+from loguru import logger
 
 from processing_config import processing_config
 
@@ -101,7 +101,8 @@ def main_array():
                     'inpaths': [str(p) for p in dates_to_paths[date]],
                     'donepath': str(create_donepath),
                 }
-                slurm_script_path = write_tasks_slurm_job_array([create_task], 'createzarr', nconcurrent_tasks=nconcurrent_tasks)
+                slurm_script_path = write_tasks_slurm_job_array([create_task], 'createzarr',
+                                                                nconcurrent_tasks=nconcurrent_tasks)
                 logger.debug(slurm_script_path)
                 create_donepath.parent.mkdir(parents=True, exist_ok=True)
                 create_jobid = sysrun(f'sbatch --parsable {slurm_script_path}').stdout
@@ -122,12 +123,14 @@ def main_array():
                 }
             )
 
+    regrid_jobid = None
     if len(tasks):
         logger.info(f'Running {len(tasks)} tasks')
-        slurm_script_path = write_tasks_slurm_job_array(tasks, 'regrid', nconcurrent_tasks=nconcurrent_tasks, depends_on=create_jobid)
+        slurm_script_path = write_tasks_slurm_job_array(tasks, 'regrid', nconcurrent_tasks=nconcurrent_tasks,
+                                                        depends_on=create_jobid)
         logger.debug(slurm_script_path)
-        jobid = sysrun(f'sbatch --parsable {slurm_script_path}').stdout
-        logger.info(jobid)
+        regrid_jobid = sysrun(f'sbatch --parsable {slurm_script_path}').stdout
+        logger.info(regrid_jobid)
     else:
         logger.info('No tasks to run')
 
