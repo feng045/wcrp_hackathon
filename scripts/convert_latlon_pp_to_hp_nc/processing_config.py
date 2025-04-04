@@ -87,23 +87,31 @@ chunks2d = {
     0: (4 ** 8, 12 * 4 ** 0),
 }
 
+# TODO: much better for regional arrays if these have the same spatial chunks as 2d
 chunks3d = {
-    # z10 has to have no chunking over time.
-    10: (1, 5, 4 ** 9),  # 48 chunks per time.
-    9: (4, 5, 4 ** 8),
-    8: (4 ** 2, 5, 4 ** 7),
-    7: (4 ** 3, 5, 4 ** 6),
-    # transition to fewer chunks per time.
-    6: (4 ** 3, 5, 4 ** 6),  # 12 chunks per time
-    5: (4 ** 3, 5, 12 * 4 ** 4),
-    # transition to 1 chunk per time.
-    4: (4 ** 3, 5, 12 * 4 ** 4),
-    3: (4 ** 4, 5, 12 * 4 ** 3),
-    # increase number pressure levels.
-    2: (4 ** 4, 25, 12 * 4 ** 2),
-    1: (4 ** 5, 25, 12 * 4 ** 1),
-    0: (4 ** 6, 25, 12 * 4 ** 0),
+    z: (t, 1, s)
+    for z, (t, s) in chunks2d.items()
 }
+
+# TODO: much better for regional arrays if these have the same spatial chunks as 2d
+# switch to (X, 1, Y), where X and Y are same as 2d.
+# chunks3d = {
+#     # z10 has to have no chunking over time.
+#     10: (1, 5, 4 ** 9),  # 48 chunks per time.
+#     9: (4, 5, 4 ** 8),
+#     8: (4 ** 2, 5, 4 ** 7),
+#     7: (4 ** 3, 5, 4 ** 6),
+#     # transition to fewer chunks per time.
+#     6: (4 ** 3, 5, 4 ** 6),  # 12 chunks per time
+#     5: (4 ** 3, 5, 12 * 4 ** 4),
+#     # transition to 1 chunk per time.
+#     4: (4 ** 3, 5, 12 * 4 ** 4),
+#     3: (4 ** 4, 5, 12 * 4 ** 3),
+#     # increase number pressure levels.
+#     2: (4 ** 4, 25, 12 * 4 ** 2),
+#     1: (4 ** 5, 25, 12 * 4 ** 1),
+#     0: (4 ** 6, 25, 12 * 4 ** 0),
+# }
 
 drop_vars = [
     'latitude_0',
@@ -158,9 +166,9 @@ processing_config = {
                 },
                 'extra_attrs': {
                     'stratiform_rainfall_flux': {'notes':
-                                                 'hourly mean - time index shifted from half past the hour to the following hour'},
+                                                     'hourly mean - time index shifted from half past the hour to the following hour'},
                     'stratiform_snowfall_flux': {'notes':
-                                                 'hourly mean - time index shifted from half past the hour to the following hour'},
+                                                     'hourly mean - time index shifted from half past the hour to the following hour'},
                 },
                 'chunks': chunks2d,
             },
@@ -184,7 +192,67 @@ processing_config = {
                 'extra_constraints': {},
                 'extra_attrs': {n: {
                     'notes': 'interpolated from UM model levels to pressure levels using iris.experimental.stratify'}
-                                for n in name_map_3d_ml.keys()},
+                    for n in name_map_3d_ml.keys()},
+                'chunks': chunks3d,
+                'interpolate_model_levels_to_pressure': True,
+            },
+        },
+    },
+    'SAmer_km4p4_RAL3P3.n1280_GAL9_nest': {
+        'regional': True,
+        'add_cyclic': False,
+        'basedir': Path(
+            '/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/10km-GAL9-nest/SAmer_km4p4_RAL3P3'),
+        'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done'),
+        'donepath_tpl': f'5km-RAL3/{{task}}_{{date}}.{vn5kmRAL3}.done',
+        'first_date': '20200120T00',
+        'zarr_store_url_tpl': f's3://sim-data/SAmer_km4p4_RAL3P3.n1280_GAL9_nest/dev/data.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
+        'drop_vars': drop_vars,  # TODO: still needed?
+        'regrid_method': 'easygems_delaunay',
+        'groups': {
+            '2d': {
+                'time': time2d,
+                'zarr_store': '2d',
+                'name_map': name_map_2d,
+                'constraint': has_dimensions("time", "latitude", "longitude"),
+                'extra_constraints': {
+                    'stratiform_rainfall_flux': iris.Constraint(name='stratiform_rainfall_flux') & iris.Constraint(
+                        cube_func=cube_cell_method_is_not_empty),
+                    'stratiform_snowfall_flux': iris.Constraint(name='stratiform_snowfall_flux') & iris.Constraint(
+                        cube_func=cube_cell_method_is_not_empty),
+                    'toa_outgoing_shortwave_flux': iris.Constraint(
+                        name='toa_outgoing_shortwave_flux') & iris.AttributeConstraint(
+                        STASH='m01s01i208'),
+                },
+                'extra_attrs': {
+                    'stratiform_rainfall_flux': {'notes':
+                                                     'hourly mean - time index shifted from half past the hour to the following hour'},
+                    'stratiform_snowfall_flux': {'notes':
+                                                     'hourly mean - time index shifted from half past the hour to the following hour'},
+                },
+                'chunks': chunks2d,
+            },
+            '3d': {
+                'time': time3d,
+                'zarr_store': '3d',
+                'name_map': name_map_3d,
+                'constraint': has_dimensions("time", "pressure", "latitude", "longitude"),
+                'extra_constraints': {
+                    'relative_humidity': iris.Constraint(name='relative_humidity') & iris.AttributeConstraint(
+                        STASH='m01s16i256'),
+                },
+                'extra_attrs': {},
+                'chunks': chunks3d,
+            },
+            '3d_ml': {
+                'time': time3d,
+                'zarr_store': '3d',
+                'name_map': name_map_3d_ml,
+                'constraint': has_dimensions("time", "model_level_number", "latitude", "longitude"),
+                'extra_constraints': {},
+                'extra_attrs': {n: {
+                    'notes': 'interpolated from UM model levels to pressure levels using iris.experimental.stratify'}
+                    for n in name_map_3d_ml.keys()},
                 'chunks': chunks3d,
                 'interpolate_model_levels_to_pressure': True,
             },
