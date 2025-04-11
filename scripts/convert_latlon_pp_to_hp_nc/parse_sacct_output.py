@@ -20,10 +20,22 @@ data = [line.split('|') for line in lines]
 
 df = pd.DataFrame(data, columns=["jobid", "start", "end", "elapsed", "state", "maxrss", "host"])
 nfailed = (df.state == 'FAILED').sum()
-df = df[df.state != 'FAILED']
+df = df[df.state == 'FAILED']
 df['start'] = pd.to_datetime(df['start'], errors='coerce')
 df['end'] = pd.to_datetime(df['end'], errors='coerce')
-df['maxrss'] = df['maxrss'].str.rstrip('K').replace('', '0').astype(float) / 1e6
+
+def map_maxrss(value):
+    value = str(value)
+    if value == '':
+        return 0
+    suffix_factor = {
+        'K': 2**10,
+        'M': 2**20,
+        'G': 2**30,
+        'T': 2**40,
+    }
+    return float(value[:-1]) * suffix_factor[value[-1]]
+df['maxrss'] = df['maxrss'].map(map_maxrss) / 1e9
 df["elapsed"] = pd.to_timedelta(df["elapsed"])
 
 # df.state == 'COMPLETED'

@@ -1,8 +1,18 @@
+import sys
 from pathlib import Path
 
 import iris
 import iris.cube
 import pandas as pd
+
+shared_metadata = {
+    'Met Office DYAMOND3 simulations': (
+        'A group of experiments have been conducted using the Met Office Unified Model (MetUM) with a focus on the '
+        'DYAMOND-3 period (Jan 2020-Feb 2021). While this experiments include standalone explicit convection global '
+        'simulations we have also developed a cyclic tropical channel and include limited area model simulations to '
+        'build our understanding of how resolving smaller-scale processes feeds back on to the large-scale '
+        'atmospheric circulation.'),
+}
 
 
 def has_dimensions(*dims):
@@ -33,7 +43,9 @@ name_map_2d = {
     'specific_humidity': ('specific_humidity', 'huss'),
     'surface_air_pressure': ('surface_air_pressure', 'ps'),
     'surface_upward_latent_heat_flux': ('surface_downward_latent_heat_flux', 'hflsd'),
+    # NOTE change in dir. See invert_cube_sign
     'surface_upward_sensible_heat_flux': ('surface_downward_sensible_heat_flux', 'hfssd'),
+    # NOTE change in dir. See invert_cube_sign
     # Changed from rldt as per tobi's message on Mattermost.
     'surface_downwelling_longwave_flux_in_air': ('surface_downwelling_longwave_flux_in_air', 'rlds'),
     'surface_downwelling_longwave_flux_in_air_assuming_clear_sky': (
@@ -67,6 +79,7 @@ name_map_3d_ml = {
     'mass_fraction_of_cloud_ice_crystals_in_air': ('mass_fraction_of_snow_water_in_air', 'qs'),
 }
 
+# Aim for chunk sizes between 1-10MB.
 chunks2d = {
     # z10 has to have no chunking over time.
     10: (1, 4 ** 10),  # 12 chunks per time.
@@ -85,13 +98,38 @@ chunks2d = {
     0: (4 ** 8, 12 * 4 ** 0),
 }
 
-# TODO: much better for regional arrays if these have the same spatial chunks as 2d
+# Much better for regional arrays if these have the same spatial chunks as 2d
 chunks3d = {
     z: (t, 1, s)
     for z, (t, s) in chunks2d.items()
 }
 
-# TODO: much better for regional arrays if these have the same spatial chunks as 2d
+# Aim for chunk sizes between 1-10MB.
+chunks2dregional = {
+    # z10 has to have no chunking over time.
+    10: (1, 4 ** 9),  # 12 x 4 = 48 chunks per time.
+    # Increase temporal at same rate as reducing spatial.
+    9: (4, 4 ** 9),
+    8: (4 ** 2, 4 ** 8),
+    7: (4 ** 3, 4 ** 7),
+    # Transition to 3 chunks per time.
+    6: (4 ** 3, 4 ** 7),
+    # Transition to 1 chunk per time.
+    5: (4 ** 3, 12 * 4 ** 5),
+    4: (4 ** 4, 12 * 4 ** 4),
+    3: (4 ** 5, 12 * 4 ** 3),
+    2: (4 ** 6, 12 * 4 ** 2),
+    1: (4 ** 7, 12 * 4 ** 1),
+    0: (4 ** 8, 12 * 4 ** 0),
+}
+
+# Much better for regional arrays if these have the same spatial chunks as 2d
+chunks3dregional = {
+    z: (t, 1, s)
+    for z, (t, s) in chunks2dregional.items()
+}
+
+# Orig:
 # switch to (X, 1, Y), where X and Y are same as 2d.
 # chunks3d = {
 #     # z10 has to have no chunking over time.
@@ -136,11 +174,17 @@ drop_vars = [
 time2d = pd.date_range('2020-01-20', '2021-04-01', freq='h')
 time3d = pd.date_range('2020-01-20', '2021-04-01', freq='3h')
 
-vn5kmRAL3 = 'v1'
+output_vn = 'v4'
+
+
+def invert_cube_sign(cube):
+    cube.data = -1 * cube.data
+    return cube
+
 
 group2d = {
     'time': time2d,
-    'zarr_store': '2d',
+    'zarr_store': 'PT1H',
     'name_map': name_map_2d,
     'constraint': has_dimensions("time", "latitude", "longitude"),
     'extra_constraints': {
@@ -151,6 +195,10 @@ group2d = {
         'toa_outgoing_shortwave_flux': iris.Constraint(
             name='toa_outgoing_shortwave_flux') & iris.AttributeConstraint(
             STASH='m01s01i208'),
+    },
+    'extra_processing': {
+        'surface_upward_latent_heat_flux': invert_cube_sign,
+        'surface_upward_sensible_heat_flux': invert_cube_sign,
     },
     'extra_attrs': {
         'stratiform_rainfall_flux': {'notes':
@@ -163,7 +211,7 @@ group2d = {
 
 group3d = {
     'time': time3d,
-    'zarr_store': '3d',
+    'zarr_store': 'PT3H',
     'name_map': name_map_3d,
     'constraint': has_dimensions("time", "pressure", "latitude", "longitude"),
     'extra_constraints': {
@@ -176,7 +224,7 @@ group3d = {
 
 group3d_ml = {
     'time': time3d,
-    'zarr_store': '3d',
+    'zarr_store': 'PT3H',
     'name_map': name_map_3d_ml,
     'constraint': has_dimensions("time", "model_level_number", "latitude", "longitude"),
     'extra_constraints': {},
@@ -186,6 +234,13 @@ group3d_ml = {
     'chunks': chunks3d,
     'interpolate_model_levels_to_pressure': True,
 }
+
+group2d_regional = group2d.copy()
+group3d_regional = group3d.copy()
+group3d_ml_regional = group3d_ml.copy()
+group2d_regional['chunks'] = chunks2dregional
+group3d_regional['chunks'] = chunks3dregional
+group3d_ml_regional['chunks'] = chunks3dregional
 
 # Idea is to map to e.g. these filenames.
 # Global:
@@ -201,11 +256,14 @@ global_sim_keys = {
 
 global_configs = {
     key: {
-        'basedir': Path(f'/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/{simdir}/glm'),
+        'regional': False,
+        'add_cyclic': True,
+        'basedir': Path(f'/gws/nopw/j04/kscale/DYAMOND3_data/{simdir}/glm'),
         'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done/dev'),
-        'donepath_tpl': f'{key}/{{task}}_{{date}}.{vn5kmRAL3}.done',
-        'first_date': '20200120T00',
-        'zarr_store_url_tpl': f's3://sim-data/dev/{key}/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
+        'donepath_tpl': f'{key}/{{task}}_{{date}}.{output_vn}.done',
+        'first_date': pd.Timestamp(2020, 1, 20, 0),
+        'max_zoom': 10 if key.startswith('glm.n2560') else 9,
+        'zarr_store_url_tpl': f's3://sim-data/dev/{key}/{output_vn}/data.healpix.{{freq}}.z{{zoom}}.zarr',
         'drop_vars': drop_vars,
         'regrid_method': 'easygems_delaunay',
         'groups': {
@@ -213,10 +271,23 @@ global_configs = {
             '3d': group3d,
             '3d_ml': group3d_ml,
         },
+        'metadata': {
+            'simulation': key,
+        }
     }
     for key, simdir in global_sim_keys.items()
 }
 
+global_configs['glm.n2560_RAL3p3']['metadata'].update({
+    'simulation_description': ('The MetUM uses a regular lat-lon grid, for our explicit convection global simulations '
+                               'we use the N2560 global grid (~5 km in mid-latitudes) and the latest regional '
+                               'atmosphere-land configuration (RAL3p3). As detailed in Bush et al 2025 the RAL3p3 '
+                               'includes significant developments over previous configurations including the CASIM '
+                               'double-moment cloud microphysics scheme and the bi-modal large-scale cloud scheme. '
+                               'Crucially for DYAMOND-3 simulations the parameterisation of convection is not active '
+                               'and this science configuration has been developed and evaluated targetting '
+                               'high-resolution (regional) simulations.'),
+})
 
 
 # Regional:
@@ -226,158 +297,69 @@ global_configs = {
 # ./10km-GAL9-nest/SAmer_km4p4_RAL3P3/field.pp/apvera.pp/SAmer_km4p4_RAL3P3.n1280_GAL9_nest.apvera_20200120T00.pp
 # ./10km-GAL9-nest/SEA_km4p4_CoMA9_TBv1/field.pp/apvera.pp/SEA_km4p4_CoMA9_TBv1.n1280_GAL9_nest.apvera_20200120T00.pp
 # ./10km-GAL9-nest/SEA_km4p4_RAL3P3/field.pp/apvera.pp/SEA_km4p4_RAL3P3.n1280_GAL9_nest.apvera_20200120T00.pp
+# Cyclic Tropical Channel (CTC):
+# ./10km-GAL9-nest/CTC_km4p4_CoMA9_TBv1/field.pp/apvera.pp/CTC_km4p4_CoMA9_TBv1.n1280_GAL9_nest.apvera_20200120T00.pp
+# ./10km-GAL9-nest/CTC_km4p4_RAL3P3/field.pp/apvera.pp/CTC_km4p4_RAL3P3.n1280_GAL9_nest.apvera_20200120T00.pp
 def map_regional_key_to_path(simdir, regional_key):
     sim_key, _ = regional_key.split('.')
-    return Path(f'/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/{simdir}/{sim_key}')
+    return Path(f'/gws/nopw/j04/kscale/DYAMOND3_data/{simdir}/{sim_key}')
+
 
 regional_sim_keys = {
     'SAmer_km4p4_RAL3P3.n1280_GAL9_nest': '10km-GAL9-nest',
     'Africa_km4p4_RAL3P3.n1280_GAL9_nest': '10km-GAL9-nest',
     'SEA_km4p4_RAL3P3.n1280_GAL9_nest': '10km-GAL9-nest',
-    # TODO: CoMA9 sims might be lacking mass_ vars. Investigate.
     'SAmer_km4p4_CoMA9_TBv1.n1280_GAL9_nest': '10km-GAL9-nest',
     'Africa_km4p4_CoMA9_TBv1.n1280_GAL9_nest': '10km-GAL9-nest',
     'SEA_km4p4_CoMA9_TBv1.n1280_GAL9_nest': '10km-GAL9-nest',
+    'CTC_km4p4_RAL3P3.n1280_GAL9_nest': '10km-GAL9-nest',
+    'CTC_km4p4_CoMA9_TBv1.n1280_GAL9_nest': '10km-GAL9-nest',
 }
 
 regional_configs = {
     key: {
         'regional': True,
+        # TODO: I think that the CTC simulation has a high enough res that there are no healpix coords outside
+        # its domain - check.
+        # Orig: I think this should be true for CTC, but it's raising an error: ValueError: The coordinate must be equally spaced.
+        # 'add_cyclic': key.startswith('CTC'),  # only difference from regional.
         'add_cyclic': False,
         'basedir': map_regional_key_to_path(simdir, key),
         'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done/dev'),
-        'donepath_tpl': f'{key}/{{task}}_{{date}}.{vn5kmRAL3}.done',
-        'first_date': '20200120T00',
-        'zarr_store_url_tpl': f's3://sim-data/dev/{key}/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
+        'donepath_tpl': f'{key}/{{task}}_{{date}}.{output_vn}.done',
+        'max_zoom': 10,
+        'first_date': pd.Timestamp(2020, 1, 20, 0),
+        'zarr_store_url_tpl': f's3://sim-data/dev/{key}/{output_vn}/data.healpix.{{freq}}.z{{zoom}}.zarr',
         'drop_vars': drop_vars,
         'regrid_method': 'easygems_delaunay',
         'groups': {
-            '2d': group2d,
-            '3d': group3d,
-            '3d_ml': group3d_ml,
+            '2d': group2d_regional,
+            '3d': group3d_regional,
+            '3d_ml': group3d_ml_regional,
         },
+        'metadata': {
+            'simulation': key,
+        }
     }
     for key, simdir in regional_sim_keys.items()
-}
-
-ctc_sim_keys = {
-    'CTC_km4p4_RAL3P3.n1280_GAL9_nest': '10km-GAL9-nest',
-    'CTC_km4p4_CoMA9_TBv1.n1280_GAL9_nest': '10km-GAL9-nest',
-}
-
-# Cyclic Tropical Channel (CTC):
-# ./10km-GAL9-nest/CTC_km4p4_CoMA9_TBv1/field.pp/apvera.pp/CTC_km4p4_CoMA9_TBv1.n1280_GAL9_nest.apvera_20200120T00.pp
-# ./10km-GAL9-nest/CTC_km4p4_RAL3P3/field.pp/apvera.pp/CTC_km4p4_RAL3P3.n1280_GAL9_nest.apvera_20200120T00.pp
-
-ctc_configs = {
-    key: {
-        'regional': True,
-        # TODO: I think this should be true, but it's raising an error: ValueError: The coordinate must be equally spaced.
-        # 'add_cyclic': True,  # only difference from regional.
-        'add_cyclic': False,
-        'basedir': map_regional_key_to_path(simdir, key),
-        'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done/dev'),
-        'donepath_tpl': f'{key}/{{task}}_{{date}}.{vn5kmRAL3}.done',
-        'first_date': '20200120T00',
-        'zarr_store_url_tpl': f's3://sim-data/dev/{key}/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
-        'drop_vars': drop_vars,
-        'regrid_method': 'easygems_delaunay',
-        'groups': {
-            '2d': group2d,
-            '3d': group3d,
-            '3d_ml': group3d_ml,
-        },
-    }
-    for key, simdir in ctc_sim_keys.items()
 }
 
 processing_config = {
     **global_configs,
     **regional_configs,
-    **ctc_configs,
 }
-# processing_config = {
-#     '5km-RAL3': {
-#         'basedir': Path('/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/5km-RAL3/glm'),
-#         'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done'),
-#         'donepath_tpl': f'5km-RAL3/{{task}}_{{date}}.{vn5kmRAL3}.done',
-#         'first_date': '20200120T00',
-#         'zarr_store_url_tpl': f's3://sim-data/5km-RAL3/dev/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
-#         'drop_vars': drop_vars,  # TODO: still needed?
-#         'regrid_method': 'easygems_delaunay',
-#         'groups': {
-#             '2d': group2d,
-#             '3d': group3d,
-#             '3d_ml': group3d_ml,
-#         },
-#     },
-#     '10km-GAL9-nest': {
-#         'basedir': Path(
-#             '/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/10km-GAL9-nest/glm'),
-#         'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done'),
-#         'donepath_tpl': f'10km_GAL9_nest/{{task}}_{{date}}.{vn5kmRAL3}.done',
-#         'first_date': '20200120T00',
-#         'zarr_store_url_tpl': f's3://sim-data/10km_GAL9_nest/dev/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
-#         'drop_vars': drop_vars,  # TODO: still needed?
-#         'regrid_method': 'easygems_delaunay',
-#         'groups': {
-#             '2d': group2d,
-#             '3d': group3d,
-#             '3d_ml': group3d_ml,
-#         },
-#     },
-#     'SAmer_km4p4_RAL3P3.n1280_GAL9_nest': {
-#         'regional': True,
-#         'add_cyclic': False,
-#         'basedir': Path(
-#             '/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/10km-GAL9-nest/SAmer_km4p4_RAL3P3'),
-#         'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done'),
-#         'donepath_tpl': f'SAmer_km4p4_RAL3P3.n1280_GAL9_nest/{{task}}_{{date}}.{vn5kmRAL3}.done',
-#         'first_date': '20200120T00',
-#         'zarr_store_url_tpl': f's3://sim-data/SAmer_km4p4_RAL3P3.n1280_GAL9_nest/dev/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
-#         'drop_vars': drop_vars,  # TODO: still needed?
-#         'regrid_method': 'easygems_delaunay',
-#         'groups': {
-#             '2d': group2d,
-#             '3d': group3d,
-#             '3d_ml': group3d_ml,
-#         },
-#     },
-#     'Africa_km4p4_RAL3P3.n1280_GAL9_nest': {
-#         # TODO: Fix wrapping at lon=0.
-#         # lon for this dataset runs from 340 to 415. Have to figure out how to handle this.
-#         'regional': True,
-#         'add_cyclic': False,
-#         'basedir': Path(
-#             '/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/10km-GAL9-nest/Africa_km4p4_RAL3P3'),
-#         'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done'),
-#         'donepath_tpl': f'Africa_km4p4_RAL3P3.n1280_GAL9_nest/{{task}}_{{date}}.{vn5kmRAL3}.done',
-#         'first_date': '20200120T00',
-#         'zarr_store_url_tpl': f's3://sim-data/Africa_km4p4_RAL3P3.n1280_GAL9_nest/dev/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
-#         'drop_vars': drop_vars,  # TODO: still needed?
-#         'regrid_method': 'easygems_delaunay',
-#         'groups': {
-#             '2d': group2d,
-#             '3d': group3d,
-#             '3d_ml': group3d_ml,
-#         },
-#     },
-#     'SEA_km4p4_RAL3P3.n1280_GAL9_nest': {
-#         # TODO: Fix wrapping at lon=0.
-#         'regional': True,
-#         'add_cyclic': False,
-#         'basedir': Path(
-#             '/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/10km-GAL9-nest/SEA_km4p4_RAL3P3'),
-#         'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done'),
-#         'donepath_tpl': f'SEA_km4p4_RAL3P3.n1280_GAL9_nest/{{task}}_{{date}}.{vn5kmRAL3}.done',
-#         'first_date': '20200120T00',
-#         'zarr_store_url_tpl': f's3://sim-data/SEA_km4p4_RAL3P3.n1280_GAL9_nest/dev/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
-#         'drop_vars': drop_vars,  # TODO: still needed?
-#         'regrid_method': 'easygems_delaunay',
-#         'groups': {
-#             '2d': group2d,
-#             '3d': group3d,
-#             '3d_ml': group3d_ml,
-#         },
-#     },
-# }
+
+if __name__ == '__main__':
+    def stringify_values(d):
+        if isinstance(d, dict):
+            return {k: stringify_values(v) for k, v in d.items()}
+        else:
+            return str(d)
+
+
+    config_key = sys.argv[1]
+    print_config = stringify_values(processing_config[config_key])
+
+    import json
+
+    print(json.dumps(print_config, indent=2, sort_keys=False))
