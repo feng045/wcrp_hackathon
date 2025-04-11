@@ -35,7 +35,6 @@ jasmin_s3 = s3fs.S3FileSystem(
 iris.FUTURE.date_microseconds = True
 
 
-# @dask.delayed
 def model_level_to_pressure(cube, p, z):
     from loguru import logger
     logger.debug(f're-level model level to pressure for {cube.name()}')
@@ -68,7 +67,6 @@ def model_level_to_pressure(cube, p, z):
     return new_cube
 
 
-# @dask.delayed
 def da_to_zarr(da, zarr_store_url_tpl, group_name, group, zoom=10):
     from loguru import logger
     name = da.name
@@ -118,7 +116,6 @@ def da_to_zarr(da, zarr_store_url_tpl, group_name, group, zoom=10):
     return name
 
 
-# @dask.delayed
 def cube_to_da(cube):
     from loguru import logger
     logger.debug(f'convert {cube.name()} from iris to xarray')
@@ -128,7 +125,6 @@ def cube_to_da(cube):
     return da.rename(cube.name())
 
 
-# @dask.delayed
 def da_to_healpix(da, regrid_method, name_map, drop_vars, add_cyclic=True, regional=False, regional_chunks=None):
     from loguru import logger
     um_name = da.name
@@ -138,10 +134,6 @@ def da_to_healpix(da, regrid_method, name_map, drop_vars, add_cyclic=True, regio
     latname = [c for c in da.coords if c.startswith('latitude')][0]
     if regrid_method == 'easygems_delaunay':
         weights_path = weights_filepath(da, lonname, latname)
-        if not weights_path.exists():
-            logger.info(f'No weights for {da.name}, generating')
-            gen_weights(da, 10, lonname, latname, add_cyclic=add_cyclic, regional=regional,
-                        regional_chunks=regional_chunks, weights_path=weights_path)
         logger.trace(f'  - using weights: {weights_path}')
         regridder = UMLatLon2HealpixRegridder(method='easygems_delaunay', weights_path=weights_path,
                                               add_cyclic=add_cyclic, regional=regional, regional_chunks=regional_chunks)
@@ -185,7 +177,7 @@ def find_halfpast_time(ds):
     return None
 
 
-class DaskProcessUMFilesToZarrStore:
+class UMProcessTasks:
     def __init__(self, config):
         self.config = config
         self.drop_vars = config['drop_vars']
@@ -193,7 +185,6 @@ class DaskProcessUMFilesToZarrStore:
 
         self.debug_log = StringIO()
         logger.add(self.debug_log)
-        self.use_dask_delayed = False
 
     def create_empty_zarr_stores(self, task):
         inpaths = task['inpaths']
@@ -203,7 +194,7 @@ class DaskProcessUMFilesToZarrStore:
         all_cubes = iris.load(inpaths)
         logger.trace(all_cubes)
 
-        regional = config.get('regional', False)
+        regional = self.config.get('regional', False)
 
         for zoom in range(11)[::-1]:
             if zoom != 10:
@@ -225,7 +216,7 @@ class DaskProcessUMFilesToZarrStore:
                 chunks = group['chunks'][zoom]
                 # Multipls of 4**n chosen as these will align well with healpix grids.
                 # Aim for 1-10MB per chunk, bearing in mind that this is saved with 4-byte float32s.
-                logger.trace(chunks)
+                logger.trace(f'chunks={chunks}')
 
                 if 'extra_constraints' in group:
                     extra_constraints = [group['extra_constraints'].get(n, n) for n in name_map.keys()]
@@ -233,50 +224,8 @@ class DaskProcessUMFilesToZarrStore:
 
                 logger.info(f'Found {len(cubes)} cubes for {group_name}')
                 for cube in cubes:
-                    cube_name = cube.name()
-                    long_name, short_name = group['name_map'][cube_name]
-                    logger.info(f'- creating da for {cube_name} -> {short_name}')
-
-                    # Want to be able to pass extra kwargs to from_iris but can't...
-                    # da = xr.DataArray.from_iris(cube, decode_timedelta=True)
-                    da = xr.DataArray.from_iris(cube).compute()
-                    timename = [c for c in da.coords if c.startswith('time')][0]
-
-                    if regional:
-                        lonname = [c for c in da.coords if c.startswith('longitude')][0]
-                        latname = [c for c in da.coords if c.startswith('latitude')][0]
-                        minlon, maxlon = da[lonname].values[[0, -1]]
-                        minlat, maxlat = da[latname].values[[0, -1]]
-                        extent = [minlon, maxlon, minlat, maxlat]
-                        _, _, ichunk = get_limited_healpix(extent, zoom=zoom, chunksize=chunks[-1])
-                        cells = ichunk
-                    else:
-                        cells = np.arange(npix)
-
-                    if da.ndim == 3:
-                        dims = ['time', 'cell']
-                        coords = {zarr_time_name: zarr_time, 'cell': cells}
-                        shape = (len(zarr_time), len(cells))
-                    elif da.ndim == 4:
-                        dims = ['time', 'pressure', 'cell']
-                        pressure_levels = [1, 5, 10, 20, 30, 50, 70, 100, 150, 200, 250, 300, 400, 500, 600, 700, 750,
-                                           800, 850, 875, 900, 925, 950, 975, 1000]
-                        coords = {zarr_time_name: zarr_time,
-                                  'pressure': (['pressure'], pressure_levels, {'units': 'hPa'}),
-                                  'cell': cells}
-                        shape = (len(zarr_time), len(pressure_levels), len(cells))
-                    else:
-                        raise Exception('ndim must be 3 or 4')
-
-                    dummies = dask.array.zeros(shape, dtype=np.float32, chunks=chunks)
-
-                    da = da.rename(**{timename: zarr_time_name})
-                    da.attrs['UM_name'] = cube_name
-                    da.attrs['long_name'] = long_name
-                    da.attrs['grid_mapping'] = 'healpix_nested'
-                    da.attrs['healpix_zoom'] = zoom
-                    da.attrs.update(group['extra_attrs'].get(cube_name, {}))
-                    da_tpl = xr.DataArray(dummies, dims=dims, coords=coords, name=short_name, attrs=da.attrs)
+                    da_tpl, short_name = self.create_dataarray_template(group, cube, chunks, zoom, npix, regional,
+                                                                        zarr_time, zarr_time_name)
 
                     ds_tpls[zarr_store_name][short_name] = da_tpl
 
@@ -291,7 +240,7 @@ class DaskProcessUMFilesToZarrStore:
                 )
                 ds_tpl = ds_tpl.assign_coords(crs=crs)
 
-                logger.info(f'Saving {config_key} zoom={zoom}')
+                logger.info(f'Saving {task["config_key"]} zoom={zoom}')
                 store_url = zarr_store_url_tpl.format(name=zarr_store_name, zoom=zoom)
                 zarr_store = s3fs.S3Map(
                     root=store_url,
@@ -304,7 +253,56 @@ class DaskProcessUMFilesToZarrStore:
         if task['donepath']:
             Path(task['donepath']).write_text(self.debug_log.getvalue())
 
-    def process_task(self, task):
+    def create_dataarray_template(self, group, cube, chunks, zoom, npix, regional, zarr_time, zarr_time_name):
+        cube_name = cube.name()
+        long_name, short_name = group['name_map'][cube_name]
+        logger.info(f'- creating da for {cube_name} -> {short_name}')
+        # Want to be able to pass extra kwargs to from_iris but can't...
+        # da = xr.DataArray.from_iris(cube, decode_timedelta=True)
+        da = xr.DataArray.from_iris(cube).compute()
+        timename = [c for c in da.coords if c.startswith('time')][0]
+        lonname = [c for c in da.coords if c.startswith('longitude')][0]
+        latname = [c for c in da.coords if c.startswith('latitude')][0]
+        weights_path = weights_filepath(da, lonname, latname)
+        if not weights_path.exists():
+            logger.info(f'No weights for {da.name}, generating')
+            add_cyclic = self.config.get('add_cyclic', True)
+            regional = self.config.get('regional', False)
+            gen_weights(da, 10, lonname, latname, add_cyclic=add_cyclic, regional=regional,
+                        regional_chunks=chunks[-1], weights_path=weights_path)
+        if regional:
+            minlon, maxlon = da[lonname].values[[0, -1]]
+            minlat, maxlat = da[latname].values[[0, -1]]
+            extent = [minlon, maxlon, minlat, maxlat]
+            _, _, ichunk = get_limited_healpix(extent, zoom=zoom, chunksize=chunks[-1])
+            cells = ichunk
+        else:
+            cells = np.arange(npix)
+        if da.ndim == 3:
+            dims = ['time', 'cell']
+            coords = {zarr_time_name: zarr_time, 'cell': cells}
+            shape = (len(zarr_time), len(cells))
+        elif da.ndim == 4:
+            dims = ['time', 'pressure', 'cell']
+            pressure_levels = [1, 5, 10, 20, 30, 50, 70, 100, 150, 200, 250, 300, 400, 500, 600, 700, 750,
+                               800, 850, 875, 900, 925, 950, 975, 1000]
+            coords = {zarr_time_name: zarr_time,
+                      'pressure': (['pressure'], pressure_levels, {'units': 'hPa'}),
+                      'cell': cells}
+            shape = (len(zarr_time), len(pressure_levels), len(cells))
+        else:
+            raise Exception('ndim must be 3 or 4')
+        dummies = dask.array.zeros(shape, dtype=np.float32, chunks=chunks)
+        da = da.rename(**{timename: zarr_time_name})
+        da.attrs['UM_name'] = cube_name
+        da.attrs['long_name'] = long_name
+        da.attrs['grid_mapping'] = 'healpix_nested'
+        da.attrs['healpix_zoom'] = zoom
+        da.attrs.update(group['extra_attrs'].get(cube_name, {}))
+        da_tpl = xr.DataArray(dummies, dims=dims, coords=coords, name=short_name, attrs=da.attrs)
+        return da_tpl, short_name
+
+    def regrid(self, task):
         inpaths = task['inpaths']
 
         logger.info('loading cubes')
@@ -313,12 +311,6 @@ class DaskProcessUMFilesToZarrStore:
 
         add_cyclic = self.config.get('add_cyclic', True)
         regional = self.config.get('regional', False)
-
-        if self.use_dask_delayed:
-            client = Client(threads_per_worker=1, n_workers=1)
-            # client = Client()
-            logger.debug(client)
-            outputs = []
 
         p = cubes.extract_cube('air_pressure')
         z = cubes.extract_cube('geopotential_height')
@@ -332,7 +324,7 @@ class DaskProcessUMFilesToZarrStore:
             chunks = group['chunks'][10]
 
             for name in name_map.keys():
-                logger.info(f'adding {name} to processing chain')
+                logger.info(f'Regridding {name}')
                 constraint = group['extra_constraints'].get(name, name)
                 if group.get('interpolate_model_levels_to_pressure', False):
                     ml_cube = cubes.extract(group_constraint).extract_cube(constraint)
@@ -345,14 +337,7 @@ class DaskProcessUMFilesToZarrStore:
                 da = cube_to_da(cube)
                 da_hp = da_to_healpix(da, self.config['regrid_method'], group['name_map'], self.drop_vars, add_cyclic,
                                       regional, regional_chunks=chunks[-1])
-                output = da_to_zarr(da_hp, self.config['zarr_store_url_tpl'], group_name, group)
-
-                if self.use_dask_delayed:
-                    outputs.append(output)
-
-        if self.use_dask_delayed:
-            logger.info('computing')
-            dask.compute(*outputs)
+                da_to_zarr(da_hp, self.config['zarr_store_url_tpl'], group_name, group)
 
         logger.info('completed')
         if task['donepath']:
@@ -373,9 +358,9 @@ class DaskProcessUMFilesToZarrStore:
 def slurm_run(tasks, array_index):
     task = tasks[array_index]
     logger.debug(task)
-    proc = DaskProcessUMFilesToZarrStore(processing_config[task['config_key']])
+    proc = UMProcessTasks(processing_config[task['config_key']])
     if task['task_type'] == 'regrid':
-        proc.process_task(task)
+        proc.regrid(task)
     elif task['task_type'] == 'create_empty_zarr_stores':
         proc.create_empty_zarr_stores(task)
     elif task['task_type'] == 'coarsen_healpix_region':

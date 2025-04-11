@@ -4,8 +4,6 @@ import iris
 import iris.cube
 import pandas as pd
 
-TMPDIR = Path('/work/scratch-nopw2/mmuetz/wcrp_hackathon/')
-
 
 def has_dimensions(*dims):
     """Returns an Iris constraint that filters cubes based on dimensions."""
@@ -140,131 +138,246 @@ time3d = pd.date_range('2020-01-20', '2021-04-01', freq='3h')
 
 vn5kmRAL3 = 'v1'
 
-processing_config = {
-    '5km-RAL3': {
-        'basedir': Path('/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/5km-RAL3'),
-        'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done'),
-        'donepath_tpl': f'5km-RAL3/{{task}}_{{date}}.{vn5kmRAL3}.done',
-        'first_date': '20200120T00',
-        'zarr_store_url_tpl': f's3://sim-data/5km-RAL3/dev/data.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
-        'drop_vars': drop_vars,  # TODO: still needed?
-        'regrid_method': 'easygems_delaunay',
-        'groups': {
-            '2d': {
-                'time': time2d,
-                'zarr_store': '2d',
-                'name_map': name_map_2d,
-                'constraint': has_dimensions("time", "latitude", "longitude"),
-                'extra_constraints': {
-                    'stratiform_rainfall_flux': iris.Constraint(name='stratiform_rainfall_flux') & iris.Constraint(
-                        cube_func=cube_cell_method_is_not_empty),
-                    'stratiform_snowfall_flux': iris.Constraint(name='stratiform_snowfall_flux') & iris.Constraint(
-                        cube_func=cube_cell_method_is_not_empty),
-                    'toa_outgoing_shortwave_flux': iris.Constraint(
-                        name='toa_outgoing_shortwave_flux') & iris.AttributeConstraint(
-                        STASH='m01s01i208'),
-                },
-                'extra_attrs': {
-                    'stratiform_rainfall_flux': {'notes':
-                                                     'hourly mean - time index shifted from half past the hour to the following hour'},
-                    'stratiform_snowfall_flux': {'notes':
-                                                     'hourly mean - time index shifted from half past the hour to the following hour'},
-                },
-                'chunks': chunks2d,
-            },
-            '3d': {
-                'time': time3d,
-                'zarr_store': '3d',
-                'name_map': name_map_3d,
-                'constraint': has_dimensions("time", "pressure", "latitude", "longitude"),
-                'extra_constraints': {
-                    'relative_humidity': iris.Constraint(name='relative_humidity') & iris.AttributeConstraint(
-                        STASH='m01s16i256'),
-                },
-                'extra_attrs': {},
-                'chunks': chunks3d,
-            },
-            '3d_ml': {
-                'time': time3d,
-                'zarr_store': '3d',
-                'name_map': name_map_3d_ml,
-                'constraint': has_dimensions("time", "model_level_number", "latitude", "longitude"),
-                'extra_constraints': {},
-                'extra_attrs': {n: {
-                    'notes': 'interpolated from UM model levels to pressure levels using iris.experimental.stratify'}
-                    for n in name_map_3d_ml.keys()},
-                'chunks': chunks3d,
-                'interpolate_model_levels_to_pressure': True,
-            },
-        },
+group2d = {
+    'time': time2d,
+    'zarr_store': '2d',
+    'name_map': name_map_2d,
+    'constraint': has_dimensions("time", "latitude", "longitude"),
+    'extra_constraints': {
+        'stratiform_rainfall_flux': iris.Constraint(name='stratiform_rainfall_flux') & iris.Constraint(
+            cube_func=cube_cell_method_is_not_empty),
+        'stratiform_snowfall_flux': iris.Constraint(name='stratiform_snowfall_flux') & iris.Constraint(
+            cube_func=cube_cell_method_is_not_empty),
+        'toa_outgoing_shortwave_flux': iris.Constraint(
+            name='toa_outgoing_shortwave_flux') & iris.AttributeConstraint(
+            STASH='m01s01i208'),
     },
-    'SAmer_km4p4_RAL3P3.n1280_GAL9_nest': {
-        'regional': True,
-        'add_cyclic': False,
-        'basedir': Path(
-            '/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/10km-GAL9-nest/SAmer_km4p4_RAL3P3'),
-        'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done'),
-        'donepath_tpl': f'5km-RAL3/{{task}}_{{date}}.{vn5kmRAL3}.done',
-        'first_date': '20200120T00',
-        'zarr_store_url_tpl': f's3://sim-data/SAmer_km4p4_RAL3P3.n1280_GAL9_nest/dev/data.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
-        'drop_vars': drop_vars,  # TODO: still needed?
-        'regrid_method': 'easygems_delaunay',
-        'groups': {
-            '2d': {
-                'time': time2d,
-                'zarr_store': '2d',
-                'name_map': name_map_2d,
-                'constraint': has_dimensions("time", "latitude", "longitude"),
-                'extra_constraints': {
-                    'stratiform_rainfall_flux': iris.Constraint(name='stratiform_rainfall_flux') & iris.Constraint(
-                        cube_func=cube_cell_method_is_not_empty),
-                    'stratiform_snowfall_flux': iris.Constraint(name='stratiform_snowfall_flux') & iris.Constraint(
-                        cube_func=cube_cell_method_is_not_empty),
-                    'toa_outgoing_shortwave_flux': iris.Constraint(
-                        name='toa_outgoing_shortwave_flux') & iris.AttributeConstraint(
-                        STASH='m01s01i208'),
-                },
-                'extra_attrs': {
-                    'stratiform_rainfall_flux': {'notes':
-                                                     'hourly mean - time index shifted from half past the hour to the following hour'},
-                    'stratiform_snowfall_flux': {'notes':
-                                                     'hourly mean - time index shifted from half past the hour to the following hour'},
-                },
-                'chunks': chunks2d,
-            },
-            '3d': {
-                'time': time3d,
-                'zarr_store': '3d',
-                'name_map': name_map_3d,
-                'constraint': has_dimensions("time", "pressure", "latitude", "longitude"),
-                'extra_constraints': {
-                    'relative_humidity': iris.Constraint(name='relative_humidity') & iris.AttributeConstraint(
-                        STASH='m01s16i256'),
-                },
-                'extra_attrs': {},
-                'chunks': chunks3d,
-            },
-            '3d_ml': {
-                'time': time3d,
-                'zarr_store': '3d',
-                'name_map': name_map_3d_ml,
-                'constraint': has_dimensions("time", "model_level_number", "latitude", "longitude"),
-                'extra_constraints': {},
-                'extra_attrs': {n: {
-                    'notes': 'interpolated from UM model levels to pressure levels using iris.experimental.stratify'}
-                    for n in name_map_3d_ml.keys()},
-                'chunks': chunks3d,
-                'interpolate_model_levels_to_pressure': True,
-            },
-        }
+    'extra_attrs': {
+        'stratiform_rainfall_flux': {'notes':
+                                         'hourly mean - time index shifted from half past the hour to the following hour'},
+        'stratiform_snowfall_flux': {'notes':
+                                         'hourly mean - time index shifted from half past the hour to the following hour'},
     },
+    'chunks': chunks2d,
 }
 
-# processing_config['5km-RAL3-e2g'] = processing_config['5km-RAL3'].copy()
-# processing_config['5km-RAL3-e2g']['regrid_method'] = 'earth2grid'
-# processing_config['5km-RAL3-e2g']['groups']['2d']['stores'] = {
-#     zoom: s3fs.S3Map(
-#         root=f's3://sim-data/DYAMOND3_example_data/5km-RAL3/2d/data.2d.z{zoom}.earth2grid.zarr',
-#         s3=jasmin_s3, check=False)
-#     for zoom in range(11)}
-#
+group3d = {
+    'time': time3d,
+    'zarr_store': '3d',
+    'name_map': name_map_3d,
+    'constraint': has_dimensions("time", "pressure", "latitude", "longitude"),
+    'extra_constraints': {
+        'relative_humidity': iris.Constraint(name='relative_humidity') & iris.AttributeConstraint(
+            STASH='m01s16i256'),
+    },
+    'extra_attrs': {},
+    'chunks': chunks3d,
+}
+
+group3d_ml = {
+    'time': time3d,
+    'zarr_store': '3d',
+    'name_map': name_map_3d_ml,
+    'constraint': has_dimensions("time", "model_level_number", "latitude", "longitude"),
+    'extra_constraints': {},
+    'extra_attrs': {n: {
+        'notes': 'interpolated from UM model levels to pressure levels using iris.experimental.stratify'}
+        for n in name_map_3d_ml.keys()},
+    'chunks': chunks3d,
+    'interpolate_model_levels_to_pressure': True,
+}
+
+# Idea is to map to e.g. these filenames.
+# Global:
+# ./10km-CoMA9/glm/field.pp/apvera.pp/glm.n1280_CoMA9.apvera_20200120T00.pp
+# ./5km-RAL3/glm/field.pp/apvera.pp/glm.n2560_RAL3p3.apvera_20200120T00.pp
+# ./10km-GAL9-nest/glm/field.pp/apvera.pp/glm.n1280_GAL9_nest.apvera_20200120T00.pp
+
+global_sim_keys = {
+    'glm.n1280_CoMA9': '10km-CoMA9',
+    'glm.n2560_RAL3p3': '5km-RAL3',
+    'glm.n1280_GAL9_nest': '10km-GAL9-nest',
+}
+
+global_configs = {
+    key: {
+        'basedir': Path(f'/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/{simdir}/glm'),
+        'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done/dev'),
+        'donepath_tpl': f'{key}/{{task}}_{{date}}.{vn5kmRAL3}.done',
+        'first_date': '20200120T00',
+        'zarr_store_url_tpl': f's3://sim-data/dev/{key}/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
+        'drop_vars': drop_vars,
+        'regrid_method': 'easygems_delaunay',
+        'groups': {
+            '2d': group2d,
+            '3d': group3d,
+            '3d_ml': group3d_ml,
+        },
+    }
+    for key, simdir in global_sim_keys.items()
+}
+
+
+
+# Regional:
+# ./10km-GAL9-nest/Africa_km4p4_CoMA9_TBv1/field.pp/apvera.pp/Africa_km4p4_CoMA9_TBv1.n1280_GAL9_nest.apvera_20200120T00.pp
+# ./10km-GAL9-nest/Africa_km4p4_RAL3P3/field.pp/apvera.pp/Africa_km4p4_RAL3P3.n1280_GAL9_nest.apvera_20200120T00.pp
+# ./10km-GAL9-nest/SAmer_km4p4_CoMA9_TBv1/field.pp/apvera.pp/SAmer_km4p4_CoMA9_TBv1.n1280_GAL9_nest.apvera_20200120T00.pp
+# ./10km-GAL9-nest/SAmer_km4p4_RAL3P3/field.pp/apvera.pp/SAmer_km4p4_RAL3P3.n1280_GAL9_nest.apvera_20200120T00.pp
+# ./10km-GAL9-nest/SEA_km4p4_CoMA9_TBv1/field.pp/apvera.pp/SEA_km4p4_CoMA9_TBv1.n1280_GAL9_nest.apvera_20200120T00.pp
+# ./10km-GAL9-nest/SEA_km4p4_RAL3P3/field.pp/apvera.pp/SEA_km4p4_RAL3P3.n1280_GAL9_nest.apvera_20200120T00.pp
+def map_regional_key_to_path(simdir, regional_key):
+    sim_key, _ = regional_key.split('.')
+    return Path(f'/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/{simdir}/{sim_key}')
+
+regional_sim_keys = {
+    'SAmer_km4p4_RAL3P3.n1280_GAL9_nest': '10km-GAL9-nest',
+    'Africa_km4p4_RAL3P3.n1280_GAL9_nest': '10km-GAL9-nest',
+    'SEA_km4p4_RAL3P3.n1280_GAL9_nest': '10km-GAL9-nest',
+    # TODO: CoMA9 sims might be lacking mass_ vars. Investigate.
+    'SAmer_km4p4_CoMA9_TBv1.n1280_GAL9_nest': '10km-GAL9-nest',
+    'Africa_km4p4_CoMA9_TBv1.n1280_GAL9_nest': '10km-GAL9-nest',
+    'SEA_km4p4_CoMA9_TBv1.n1280_GAL9_nest': '10km-GAL9-nest',
+}
+
+regional_configs = {
+    key: {
+        'regional': True,
+        'add_cyclic': False,
+        'basedir': map_regional_key_to_path(simdir, key),
+        'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done/dev'),
+        'donepath_tpl': f'{key}/{{task}}_{{date}}.{vn5kmRAL3}.done',
+        'first_date': '20200120T00',
+        'zarr_store_url_tpl': f's3://sim-data/dev/{key}/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
+        'drop_vars': drop_vars,
+        'regrid_method': 'easygems_delaunay',
+        'groups': {
+            '2d': group2d,
+            '3d': group3d,
+            '3d_ml': group3d_ml,
+        },
+    }
+    for key, simdir in regional_sim_keys.items()
+}
+
+ctc_sim_keys = {
+    'CTC_km4p4_RAL3P3.n1280_GAL9_nest': '10km-GAL9-nest',
+    'CTC_km4p4_CoMA9_TBv1.n1280_GAL9_nest': '10km-GAL9-nest',
+}
+
+# Cyclic Tropical Channel (CTC):
+# ./10km-GAL9-nest/CTC_km4p4_CoMA9_TBv1/field.pp/apvera.pp/CTC_km4p4_CoMA9_TBv1.n1280_GAL9_nest.apvera_20200120T00.pp
+# ./10km-GAL9-nest/CTC_km4p4_RAL3P3/field.pp/apvera.pp/CTC_km4p4_RAL3P3.n1280_GAL9_nest.apvera_20200120T00.pp
+
+ctc_configs = {
+    key: {
+        'regional': True,
+        # TODO: I think this should be true, but it's raising an error: ValueError: The coordinate must be equally spaced.
+        # 'add_cyclic': True,  # only difference from regional.
+        'add_cyclic': False,
+        'basedir': map_regional_key_to_path(simdir, key),
+        'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done/dev'),
+        'donepath_tpl': f'{key}/{{task}}_{{date}}.{vn5kmRAL3}.done',
+        'first_date': '20200120T00',
+        'zarr_store_url_tpl': f's3://sim-data/dev/{key}/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
+        'drop_vars': drop_vars,
+        'regrid_method': 'easygems_delaunay',
+        'groups': {
+            '2d': group2d,
+            '3d': group3d,
+            '3d_ml': group3d_ml,
+        },
+    }
+    for key, simdir in ctc_sim_keys.items()
+}
+
+processing_config = {
+    **global_configs,
+    **regional_configs,
+    **ctc_configs,
+}
+# processing_config = {
+#     '5km-RAL3': {
+#         'basedir': Path('/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/5km-RAL3/glm'),
+#         'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done'),
+#         'donepath_tpl': f'5km-RAL3/{{task}}_{{date}}.{vn5kmRAL3}.done',
+#         'first_date': '20200120T00',
+#         'zarr_store_url_tpl': f's3://sim-data/5km-RAL3/dev/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
+#         'drop_vars': drop_vars,  # TODO: still needed?
+#         'regrid_method': 'easygems_delaunay',
+#         'groups': {
+#             '2d': group2d,
+#             '3d': group3d,
+#             '3d_ml': group3d_ml,
+#         },
+#     },
+#     '10km-GAL9-nest': {
+#         'basedir': Path(
+#             '/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/10km-GAL9-nest/glm'),
+#         'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done'),
+#         'donepath_tpl': f'10km_GAL9_nest/{{task}}_{{date}}.{vn5kmRAL3}.done',
+#         'first_date': '20200120T00',
+#         'zarr_store_url_tpl': f's3://sim-data/10km_GAL9_nest/dev/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
+#         'drop_vars': drop_vars,  # TODO: still needed?
+#         'regrid_method': 'easygems_delaunay',
+#         'groups': {
+#             '2d': group2d,
+#             '3d': group3d,
+#             '3d_ml': group3d_ml,
+#         },
+#     },
+#     'SAmer_km4p4_RAL3P3.n1280_GAL9_nest': {
+#         'regional': True,
+#         'add_cyclic': False,
+#         'basedir': Path(
+#             '/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/10km-GAL9-nest/SAmer_km4p4_RAL3P3'),
+#         'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done'),
+#         'donepath_tpl': f'SAmer_km4p4_RAL3P3.n1280_GAL9_nest/{{task}}_{{date}}.{vn5kmRAL3}.done',
+#         'first_date': '20200120T00',
+#         'zarr_store_url_tpl': f's3://sim-data/SAmer_km4p4_RAL3P3.n1280_GAL9_nest/dev/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
+#         'drop_vars': drop_vars,  # TODO: still needed?
+#         'regrid_method': 'easygems_delaunay',
+#         'groups': {
+#             '2d': group2d,
+#             '3d': group3d,
+#             '3d_ml': group3d_ml,
+#         },
+#     },
+#     'Africa_km4p4_RAL3P3.n1280_GAL9_nest': {
+#         # TODO: Fix wrapping at lon=0.
+#         # lon for this dataset runs from 340 to 415. Have to figure out how to handle this.
+#         'regional': True,
+#         'add_cyclic': False,
+#         'basedir': Path(
+#             '/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/10km-GAL9-nest/Africa_km4p4_RAL3P3'),
+#         'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done'),
+#         'donepath_tpl': f'Africa_km4p4_RAL3P3.n1280_GAL9_nest/{{task}}_{{date}}.{vn5kmRAL3}.done',
+#         'first_date': '20200120T00',
+#         'zarr_store_url_tpl': f's3://sim-data/Africa_km4p4_RAL3P3.n1280_GAL9_nest/dev/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
+#         'drop_vars': drop_vars,  # TODO: still needed?
+#         'regrid_method': 'easygems_delaunay',
+#         'groups': {
+#             '2d': group2d,
+#             '3d': group3d,
+#             '3d_ml': group3d_ml,
+#         },
+#     },
+#     'SEA_km4p4_RAL3P3.n1280_GAL9_nest': {
+#         # TODO: Fix wrapping at lon=0.
+#         'regional': True,
+#         'add_cyclic': False,
+#         'basedir': Path(
+#             '/gws/nopw/j04/kscale/DYAMOND3_example_data/sample_data_hirerarchy/10km-GAL9-nest/SEA_km4p4_RAL3P3'),
+#         'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done'),
+#         'donepath_tpl': f'SEA_km4p4_RAL3P3.n1280_GAL9_nest/{{task}}_{{date}}.{vn5kmRAL3}.done',
+#         'first_date': '20200120T00',
+#         'zarr_store_url_tpl': f's3://sim-data/SEA_km4p4_RAL3P3.n1280_GAL9_nest/dev/data.healpix.{{name}}.{vn5kmRAL3}.z{{zoom}}.zarr',
+#         'drop_vars': drop_vars,  # TODO: still needed?
+#         'regrid_method': 'easygems_delaunay',
+#         'groups': {
+#             '2d': group2d,
+#             '3d': group3d,
+#             '3d_ml': group3d_ml,
+#         },
+#     },
+# }
