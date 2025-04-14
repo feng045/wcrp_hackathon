@@ -53,7 +53,7 @@ def model_level_to_pressure(cube, p, z):
     for i in range(cube.shape[0]):
         logger.trace(i)
         regridded_cube = relevel(cube[i], p[i], pressure_levels, interpolator=interpolator)
-        logger.trace(f'regridded_cube.data.sum() {regridded_cube.data.sum()}')
+        # logger.trace(f'regridded_cube.data.sum() {regridded_cube.data.sum()}')
         new_cube_data[i] = regridded_cube.data
 
     coords = [(cube.coord('time'), 0), (z.coord('pressure'), 1), (cube.coord('latitude'), 2),
@@ -67,7 +67,7 @@ def model_level_to_pressure(cube, p, z):
     return new_cube
 
 
-def da_to_zarr(da, zarr_store_url_tpl, group_name, group, zoom, regional):
+def da_to_zarr(da, zarr_store_url_tpl, group_name, group, zoom, regional, nan_checks=False):
     from loguru import logger
     name = da.name
     logger.info(f'{name} to zarr for zoom level {zoom}')
@@ -102,11 +102,12 @@ def da_to_zarr(da, zarr_store_url_tpl, group_name, group, zoom, regional):
 
     logger.debug(
         f'writing {name} to zarr store {url} (idx={idx}, time={source_times_to_match[0]})')
-    if np.isnan(da.values).all():
-        logger.error(da)
-        raise Exception(f'da {da.name} is full of NaNs')
-    if not regional and np.isnan(da.values).any():
-        logger.warning(f'da {da.name} contains NaNs')
+    if nan_checks:
+        if np.isnan(da.values).all():
+            logger.error(da)
+            raise Exception(f'da {da.name} is full of NaNs')
+        if not regional and np.isnan(da.values).any():
+            logger.warning(f'da {da.name} contains NaNs')
 
     if group_name == '2d':
         da.to_zarr(zarr_store,
@@ -262,8 +263,13 @@ class UMProcessTasks:
                             logger.debug('bounds={}'.format(metadata['bounds']))
                     ds_tpls[zarr_store_name][short_name] = da_tpl
 
+                if regional and zoom != self.config['max_zoom']:
+                    coords = {n: c for n, c in da_tpl.coords if not n == 'time'}
+                    dummies = dask.array.zeros(da_tpl.shape[1:], dtype=np.float32, chunks=chunks)
+                    ds_tpls[zarr_store_name]['weights'] = xr.DataArray(dummies, name='weights', coords=coords)
+
             for zarr_store_name, ds_tpl in ds_tpls.items():
-                # This means that the data will be plottable (by easygems.healpix.healpix show at least) even when it
+                # This means that the data will be plottable (by easygems.healpix.healpix_show at least) even when it
                 # is regional.
                 crs = xr.DataArray(
                     name="crs",
