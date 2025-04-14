@@ -43,11 +43,11 @@ def completed_chunks(chunk_ids, complete_size, nchunks):
         completed[completed_idx] = True
     return completed
 
-def find_completed_time_chunks(chunksize, complete_size, zoom, urls, variable):
+def find_completed_time_chunks(src_ds, chunksize, complete_size, zoom, urls, variable):
     """Find all initialized chunks and check whether they are complete for each time"""
     rel_url = urls[zoom]
-    ds = xr.open_zarr('http://hackathon-o.s3.jc.rl.ac.uk/' + rel_url)
-    ntimechunks = math.ceil(len(ds.time) / chunksize[0])
+    # ds = xr.open_zarr('http://hackathon-o.s3.jc.rl.ac.uk/' + rel_url)
+    ntimechunks = math.ceil(len(src_ds.time) / chunksize[0])
     init_chunk_ids = get_initialized_chunk_ids(rel_url, variable)
     return completed_chunks(init_chunk_ids, complete_size, ntimechunks)
 
@@ -69,9 +69,14 @@ def find_tgt_calcs(urls, chunks, variable='ta', max_zoom=10, dim='2d'):
     tgt_calcs = {}
     for src_zoom in range(max_zoom, 0, -1):
         tgt_zoom = src_zoom - 1
-        logger.info(f'Calculating jobs to do for {tgt_zoom}')
-        src_ncell = 12 * 4**src_zoom
-        tgt_ncell = 12 * 4**tgt_zoom
+        logger.info(f'Calculating jobs to do for z{tgt_zoom} {urls[tgt_zoom]}')
+        if src_zoom == max_zoom:
+            src_ds = xr.open_zarr('http://hackathon-o.s3.jc.rl.ac.uk/' + urls[src_zoom])
+        else:
+            src_ds = tgt_ds
+        tgt_ds = xr.open_zarr('http://hackathon-o.s3.jc.rl.ac.uk/' + urls[tgt_zoom])
+        src_ncell = len(src_ds.cell)
+        tgt_ncell = len(tgt_ds.cell)
 
         src_chunksize = chunks[src_zoom]
         tgt_chunksize = chunks[tgt_zoom]
@@ -87,11 +92,11 @@ def find_tgt_calcs(urls, chunks, variable='ta', max_zoom=10, dim='2d'):
         factor = tgt_chunksize[0] // src_chunksize[0]
 
         if src_zoom == max_zoom:
-            src_completed = find_completed_time_chunks(src_chunksize, src_complete_size, src_zoom, urls, variable)
+            src_completed = find_completed_time_chunks(src_ds, src_chunksize, src_complete_size, src_zoom, urls, variable)
         else:
             src_completed = tgt_will_be_complete
 
-        tgt_completed = find_completed_time_chunks(tgt_chunksize, tgt_complete_size, tgt_zoom, urls, variable)
+        tgt_completed = find_completed_time_chunks(tgt_ds, tgt_chunksize, tgt_complete_size, tgt_zoom, urls, variable)
         logger.debug(f'already completed {tgt_completed.sum()}')
         tgt_can_complete = find_tgt_can_complete(factor, src_completed, tgt_completed)
         logger.debug(f'can complete by coarsening {tgt_can_complete.sum()}')
@@ -100,7 +105,6 @@ def find_tgt_calcs(urls, chunks, variable='ta', max_zoom=10, dim='2d'):
         logger.debug(f'adding {tgt_calc.sum()} new calcs')
         tgt_will_be_complete = tgt_completed | tgt_can_complete
         logger.debug(f'will be complete {tgt_will_be_complete.sum()}')
-        # breakpoint()
         if not tgt_will_be_complete.any():
             break
         tgt_calcs[tgt_zoom] = tgt_calc
@@ -117,6 +121,7 @@ def find_tgt_time_calcs(tgt_calcs, chunks):
         for can_calc, chunk_idx in zip(tgt_calc, tgt_chunk_idx):
             if can_calc:
                 calcs.append({'start_idx': int(time_chunk * chunk_idx), 'end_idx': int(time_chunk * (chunk_idx + 1))})
+        logger.debug(f'adding {len(calcs)} calcs')
         tgt_time_calcs[zoom] = calcs
     return tgt_time_calcs
 
