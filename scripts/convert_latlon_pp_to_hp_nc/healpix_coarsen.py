@@ -107,7 +107,6 @@ def coarsen_healpix_zarr_region(src_ds, tgt_store, tgt_zoom, dim, start_idx, end
     else:
         preferred_chunks = {'time': tgt_chunks[0], 'pressure': tgt_chunks[1], 'cell': tgt_chunks[2]}
     for da in tgt_ds.data_vars.values():
-        logger.debug(f'  modify {da.name}')
         da.attrs['healpix_zoom'] = tgt_zoom
         da.encoding['chunks'] = tgt_chunks
         da.encoding['preferred_chunks'] = preferred_chunks
@@ -117,7 +116,7 @@ def coarsen_healpix_zarr_region(src_ds, tgt_store, tgt_zoom, dim, start_idx, end
         tgt_ds = tgt_ds.map(map_global_to_regional, src_ds_region=src_ds_region, tgt_ds_store=tgt_ds_store, dim=dim)
         if src_ds_region.time[0] == src_ds.time[0]:
             tgt_weights = calc_tgt_weights(src_ds, src_ds_region, tgt_ds, tgt_zoom, dim)
-            # TODO: Need to create weights for this to work.
+            # TODO: Need to create weights in empty zarr store for this to work.
             # tgt_ds['weights'] = tgt_weights
             # logger.debug(np.isnan(tgt_ds.weights).sum())
 
