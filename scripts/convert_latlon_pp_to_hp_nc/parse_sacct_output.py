@@ -20,7 +20,7 @@ data = [line.split('|') for line in lines]
 
 df = pd.DataFrame(data, columns=["jobid", "start", "end", "elapsed", "state", "maxrss", "host"])
 nfailed = (df.state == 'FAILED').sum()
-df = df[df.state != 'FAILED']
+# df = df[df.state != 'FAILED']
 df['start'] = pd.to_datetime(df['start'], errors='coerce')
 df['end'] = pd.to_datetime(df['end'], errors='coerce')
 

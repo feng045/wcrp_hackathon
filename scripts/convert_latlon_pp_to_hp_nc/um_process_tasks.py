@@ -18,8 +18,8 @@ import xarray as xr
 from iris.experimental.stratify import relevel
 from loguru import logger
 
-from healpix_coarsen import coarsen_healpix_region
 from processing_config import processing_config, shared_metadata
+from healpix_coarsen import coarsen_healpix_zarr_region
 
 sys.path.insert(0, '/home/users/mmuetz/deploy/global_hackathon_tools/dataset_transforms')
 from um_latlon_pp_to_healpix_nc import UMLatLon2HealpixRegridder, gen_weights, get_limited_healpix
@@ -392,15 +392,34 @@ class UMProcessTasks:
             Path(task['donepath']).write_text(self.debug_log.getvalue())
 
     def coarsen_healpix_region(self, task):
-        z = task['z']
-        start_time_idx = task['start_time_idx']
-        chunks = task['chunks']
-        n_tgt_time_chunks = task['n_tgt_time_chunks']
-        coarsen_healpix_region(z, start_time_idx, chunks, n_tgt_time_chunks)
+        dim = task['dim']
+        tgt_zoom = task['tgt_zoom']
+        src_zoom = tgt_zoom + 1
+
+        freqs = {
+            '2d': 'PT1H',
+            '3d': 'PT3H',
+        }
+        rel_url_tpl = self.config['zarr_store_url_tpl'][5:]  # chop off 's3://'
+        freq = freqs[dim]
+        urls = {
+            z: rel_url_tpl.format(freq=freq, zoom=z)
+            for z in range(11)
+        }
+        src_store = s3fs.S3Map(root=urls[src_zoom], s3=jasmin_s3, check=False)
+        tgt_store = s3fs.S3Map(root=urls[tgt_zoom], s3=jasmin_s3, check=False)
+
+        chunks = self.config['groups'][dim]['chunks']
+        zarr_chunks = {'time': chunks[tgt_zoom][0], 'cell': -1}
+        src_ds = xr.open_zarr(src_store, chunks=zarr_chunks)
+
+        for subtask in task['tgt_times']:
+            start_idx = subtask['start_idx']
+            end_idx = subtask['end_idx']
+            logger.debug((start_idx, end_idx))
+            coarsen_healpix_zarr_region(src_ds, tgt_store, tgt_zoom, dim, start_idx, end_idx, chunks)
 
         logger.info('completed')
-        if task['donepath']:
-            Path(task['donepath']).write_text(self.debug_log.getvalue())
 
 
 def slurm_run(tasks, array_index):
@@ -411,7 +430,7 @@ def slurm_run(tasks, array_index):
         proc.regrid(task)
     elif task['task_type'] == 'create_empty_zarr_stores':
         proc.create_empty_zarr_stores(task)
-    elif task['task_type'] == 'coarsen_healpix_region':
+    elif task['task_type'] == 'coarsen':
         proc.coarsen_healpix_region(task)
     else:
         raise Exception(f'unknown task type {task["task_type"]}')

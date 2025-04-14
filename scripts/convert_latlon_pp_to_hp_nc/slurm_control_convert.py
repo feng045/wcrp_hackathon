@@ -2,12 +2,15 @@ import json
 import subprocess as sp
 import sys
 from collections import defaultdict
+from itertools import batched
 from pathlib import Path
 
 import pandas as pd
 from loguru import logger
 
 from processing_config import processing_config
+
+from calc_completed_chunks import find_tgt_calcs, find_tgt_time_calcs
 
 
 def sysrun(cmd):
@@ -17,7 +20,7 @@ def sysrun(cmd):
 SLURM_SCRIPT_ARRAY = """#!/bin/bash
 #SBATCH --job-name="{job_name}"
 #SBATCH --time=10:00:00
-#SBATCH --mem=100000
+#SBATCH --mem={mem}
 #SBATCH --account=hrcm
 #SBATCH --partition=standard
 #SBATCH --qos=standard
@@ -38,7 +41,7 @@ def parse_date_from_pp_path(path):
     return pd.to_datetime(datestr, format="%Y%m%dT%H")
 
 
-def write_tasks_slurm_job_array(config_key, tasks, job_name, nconcurrent_tasks=30, depends_on=None):
+def write_tasks_slurm_job_array(config_key, tasks, job_name, nconcurrent_tasks=30, depends_on=None, mem=100000):
     now = pd.Timestamp.now()
     date_string = now.strftime("%Y%m%d_%H%M%S")
 
@@ -60,12 +63,30 @@ def write_tasks_slurm_job_array(config_key, tasks, job_name, nconcurrent_tasks=3
     njobs = len(tasks) - 1
     slurm_script_path.write_text(
         SLURM_SCRIPT_ARRAY.format(job_name=job_name, config_key=config_key, njobs=njobs,
+                                  mem=mem,
                                   nconcurrent_tasks=nconcurrent_tasks,
                                   tasks_path=tasks_path,
                                   dependency=dependency,
                                   date_string=date_string,
                                   comment=comment))
     return slurm_script_path
+
+
+def find_dyamond3_pp_dates_to_paths(basedir):
+    # Search for pp_paths with a specific date (N.B. filename sensitive).
+    pp_paths = sorted(basedir.glob('field.pp/apve*/**/*.pp'))
+    logger.debug(f'found {len(pp_paths)} pp paths')
+    pp_paths = [p for p in pp_paths if p.is_file()]
+    dates_to_paths = defaultdict(list)
+    for path in pp_paths:
+        dates_to_paths[parse_date_from_pp_path(path)].append(path)
+    # Only keep completed downloads.
+    dates_to_paths = {
+        k: v for k, v in dates_to_paths.items()
+        if len(v) == 4
+    }
+    logger.debug(f'found {len(dates_to_paths)} complete dates')
+    return dates_to_paths
 
 
 def enqueue_simulation(config_key):
@@ -158,35 +179,84 @@ def enqueue_simulation(config_key):
     return jobids
 
 
-def find_dyamond3_pp_dates_to_paths(basedir):
-    # Search for pp_paths with a specific date (N.B. filename sensitive).
-    pp_paths = sorted(basedir.glob('field.pp/apve*/**/*.pp'))
-    logger.debug(f'found {len(pp_paths)} pp paths')
-    pp_paths = [p for p in pp_paths if p.is_file()]
-    dates_to_paths = defaultdict(list)
-    for path in pp_paths:
-        dates_to_paths[parse_date_from_pp_path(path)].append(path)
-    # Only keep completed downloads.
-    dates_to_paths = {
-        k: v for k, v in dates_to_paths.items()
-        if len(v) == 4
+def enqueue_coarsen(config_key):
+    nconcurrent_tasks = 40
+    config = processing_config[config_key]
+    freqs = {
+        '2d': 'PT1H',
+        '3d': 'PT3H',
     }
-    logger.debug(f'found {len(dates_to_paths)} complete dates')
-    return dates_to_paths
+    # Last variables for each.
+    variables = {
+        '2d': 'rsutcs',
+        '3d': 'qs',
+    }
+    jobids = []
+    for dim in ['3d', '2d']:
+        prev_zoom_job_id = None
+
+        rel_url_tpl = config['zarr_store_url_tpl'][5:]  # chop off 's3://'
+        freq = freqs[dim]
+        urls = {
+            z: rel_url_tpl.format(freq=freq, zoom=z)
+            for z in range(11)
+        }
+
+        chunks = config['groups'][dim]['chunks']
+        max_zoom = config['max_zoom']
+        variable = variables[dim]
+
+        tgt_calcs = find_tgt_calcs(urls, chunks=chunks, variable=variable, max_zoom=max_zoom, dim=dim)
+        tgt_time_calcs = find_tgt_time_calcs(tgt_calcs, chunks=chunks)
+
+        for zoom in range(max_zoom - 1, -1, -1):
+            if zoom not in tgt_time_calcs:
+                continue
+            tasks = []
+            for tgt_times in batched(tgt_time_calcs[zoom], 10):
+                tasks.append(
+                    {
+                        'task_type': 'coarsen',
+                        'config_key': config_key,
+                        'tgt_zoom': zoom,
+                        'dim': dim,
+                        'tgt_times': tgt_times,
+                    }
+                )
+            if len(tasks):
+                logger.info(f'Running {len(tasks)} tasks')
+                if dim == '3d':
+                    mem = 256000
+                else:
+                    mem = 100000
+                slurm_script_path = write_tasks_slurm_job_array(config_key, tasks, f'coarsen_{dim}_{zoom}',
+                                                                mem=mem,
+                                                                nconcurrent_tasks=nconcurrent_tasks,
+                                                                depends_on=prev_zoom_job_id)
+                logger.debug(slurm_script_path)
+
+                prev_zoom_job_id = sysrun(f'sbatch --parsable {slurm_script_path}').stdout.strip()
+                jobids.append(prev_zoom_job_id)
+
+    return jobids
 
 
 if __name__ == '__main__':
     logger.remove()
     logger.add(sys.stderr, level="DEBUG")
-    config_key = sys.argv[1]
+    method = sys.argv[1]
+    config_key = sys.argv[2]
 
     jobids = []
-    if config_key == 'regional':
-        for key in processing_config:
-            if 'km4p4' in key:
-                jobids.extend(enqueue_simulation(key))
-    else:
-        jobids.extend(enqueue_simulation(config_key))
+    if method == 'process':
+        if config_key == 'regional':
+            for key in processing_config:
+                if 'km4p4' in key:
+                    jobids.extend(enqueue_simulation(key))
+        else:
+            jobids.extend(enqueue_simulation(config_key))
+    elif method == 'coarsen':
+        jobids.extend(enqueue_coarsen(config_key))
 
     now = pd.Timestamp.now()
     date_string = now.strftime("%Y%m%d_%H%M%S")
