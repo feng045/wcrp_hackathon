@@ -121,7 +121,7 @@ def find_tgt_time_calcs(tgt_calcs, chunks):
         for can_calc, chunk_idx in zip(tgt_calc, tgt_chunk_idx):
             if can_calc:
                 calcs.append({'start_idx': int(time_chunk * chunk_idx), 'end_idx': int(time_chunk * (chunk_idx + 1))})
-        logger.debug(f'adding {len(calcs)} calcs')
+        logger.info(f'Adding {len(calcs)} calcs')
         tgt_time_calcs[zoom] = calcs
     return tgt_time_calcs
 

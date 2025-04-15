@@ -5,17 +5,12 @@ from collections import defaultdict
 from itertools import batched
 from pathlib import Path
 
+import click
 import pandas as pd
 from loguru import logger
 
-from processing_config import processing_config
-
 from calc_completed_chunks import find_tgt_calcs, find_tgt_time_calcs
-
-
-def sysrun(cmd):
-    return sp.run(cmd, check=True, shell=True, stdout=sp.PIPE, stderr=sp.PIPE, encoding='utf8')
-
+from processing_config import processing_config
 
 SLURM_SCRIPT_ARRAY = """#!/bin/bash
 #SBATCH --job-name="{job_name}"
@@ -36,6 +31,19 @@ python um_process_tasks.py slurm {tasks_path} ${{ARRAY_INDEX}}
 """
 
 
+def sysrun(cmd):
+    return sp.run(cmd, check=True, shell=True, stdout=sp.PIPE, stderr=sp.PIPE, encoding='utf8')
+
+
+def sbatch(slurm_script_path):
+    try:
+        return sysrun(f'sbatch --parsable {slurm_script_path}').stdout.strip()
+    except sp.CalledProcessError as e:
+        logger.error(f'sbatch failed with exit code {e.returncode}')
+        logger.error(e)
+        raise
+
+
 def parse_date_from_pp_path(path):
     datestr = path.stem.split('.')[-1].split('_')[1]
     return pd.to_datetime(datestr, format="%Y%m%dT%H")
@@ -45,7 +53,7 @@ def write_tasks_slurm_job_array(config_key, tasks, job_name, nconcurrent_tasks=3
     now = pd.Timestamp.now()
     date_string = now.strftime("%Y%m%d_%H%M%S")
 
-    tasks_path = Path(f'slurm/tasks_{job_name}_{config_key}_{date_string}.json')
+    tasks_path = Path(f'slurm/tasks/tasks_{job_name}_{config_key}_{date_string}.json')
     logger.debug(tasks_path)
     logger.trace(json.dumps(tasks, indent=4))
 
@@ -59,7 +67,7 @@ def write_tasks_slurm_job_array(config_key, tasks, job_name, nconcurrent_tasks=3
 
     comment = f'{config_key},{job_name}'
 
-    slurm_script_path = Path(f'slurm/script_{job_name}_{config_key}_{date_string}.sh')
+    slurm_script_path = Path(f'slurm/scripts/script_{job_name}_{config_key}_{date_string}.sh')
     njobs = len(tasks) - 1
     slurm_script_path.write_text(
         SLURM_SCRIPT_ARRAY.format(job_name=job_name, config_key=config_key, njobs=njobs,
@@ -89,8 +97,47 @@ def find_dyamond3_pp_dates_to_paths(basedir):
     return dates_to_paths
 
 
-def enqueue_simulation(config_key):
-    nconcurrent_tasks = 40
+def write_jobids(jobids):
+    now = pd.Timestamp.now()
+    date_string = now.strftime("%Y%m%d_%H%M%S")
+    jobids_path = Path(f'slurm/jobids/jobids_{date_string}.json')
+    with jobids_path.open('w') as f:
+        json.dump(jobids, f, indent=4)
+    logger.info(f'written jobids to: {jobids_path}')
+
+
+@click.group()
+@click.option('--dry-run', '-n', is_flag=True)
+@click.option('--debug', '-D', is_flag=True)
+@click.option('--trace', '-T', is_flag=True)
+@click.option('--nconcurrent-tasks', '-N', default=40, type=int)
+@click.pass_context
+def cli(ctx, dry_run, debug, trace, nconcurrent_tasks):
+    ctx.ensure_object(dict)
+    ctx.obj['dry_run'] = dry_run
+    ctx.obj['nconcurrent_tasks'] = nconcurrent_tasks
+    logger.remove()
+    if trace:
+        logger.add(sys.stderr, level="TRACE")
+    elif debug:
+        logger.add(sys.stderr, level="DEBUG")
+    else:
+        logger.add(sys.stderr, level="INFO")
+
+    if dry_run:
+        logger.warning("Dry run: not launching any jobs")
+
+    for path in ['slurm/tasks', 'slurm/scripts', 'slurm/output', 'slurm/jobids/']:
+        path = Path(path)
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+
+
+@cli.command()
+@click.argument('config_key')
+@click.pass_context
+def process(ctx, config_key):
+    nconcurrent_tasks = ctx.obj['nconcurrent_tasks']
 
     logger.debug(f'using {nconcurrent_tasks} concurrent tasks')
     logger.info(f'Running for {config_key}')
@@ -129,14 +176,15 @@ def enqueue_simulation(config_key):
                                                                 nconcurrent_tasks=nconcurrent_tasks)
                 logger.debug(slurm_script_path)
                 create_donepath.parent.mkdir(parents=True, exist_ok=True)
-                create_jobid = sysrun(f'sbatch --parsable {slurm_script_path}').stdout.strip()
-                logger.info(f'create empty zarr stores jobid: {create_jobid}')
-                jobids.append(create_jobid)
+                if not ctx.obj['dry_run']:
+                    create_jobid = sbatch(slurm_script_path)
+                    logger.info(f'create empty zarr stores jobid: {create_jobid}')
+                    jobids.append(create_jobid)
 
         donepath = (donedir / donepath_tpl.format(task='regrid', date=date))
         donepath.parent.mkdir(parents=True, exist_ok=True)
         if donepath.exists():
-            logger.info(f'{date}: already processed')
+            logger.debug(f'{date}: already processed')
         else:
             logger.info(f'{date}: processing')
             tasks.append(
@@ -156,13 +204,22 @@ def enqueue_simulation(config_key):
                                                         nconcurrent_tasks=nconcurrent_tasks,
                                                         depends_on=create_jobid)
         logger.debug(slurm_script_path)
-        regrid_jobid = sysrun(f'sbatch --parsable {slurm_script_path}').stdout.strip()
-        logger.info(f'Regrid jobid: {regrid_jobid}')
+        if not ctx.obj['dry_run']:
+            regrid_jobid = sbatch(slurm_script_path)
+        logger.debug(f'regrid jobid: {regrid_jobid}')
         jobids.append(regrid_jobid)
     else:
         logger.info('No tasks to run')
 
-    # TODO: This needs to be it's own command. The reason is that I need to be able to examine a completed
+    if not ctx.obj['dry_run']:
+        write_jobids(jobids)
+
+
+@cli.command()
+@click.argument('config_key')
+@click.pass_context
+def coarsen(ctx, config_key):
+    # This needs to be it's own command. The reason is that I need to be able to examine a completed
     # zarr store to be able to work out how to divvy up the work. This can only been done once the above have completed,
     # and can't be calculated in advance. It would be possible to have a job whose sole purpose was to do this calc and
     # then launch other jobs, but this seems overly complicated. Just wait until these have completed then launch.
@@ -175,12 +232,7 @@ def enqueue_simulation(config_key):
     # logger.debug(slurm_script_path)
     # coarsen_jobid = sysrun(f'sbatch --parsable {slurm_script_path}').stdout.strip()
     # jobids.append(coarsen_jobid)
-
-    return jobids
-
-
-def enqueue_coarsen(config_key):
-    nconcurrent_tasks = 40
+    nconcurrent_tasks = ctx.obj['nconcurrent_tasks']
     config = processing_config[config_key]
     freqs = {
         '2d': 'PT1H',
@@ -235,32 +287,20 @@ def enqueue_coarsen(config_key):
                                                                 depends_on=prev_zoom_job_id)
                 logger.debug(slurm_script_path)
 
-                prev_zoom_job_id = sysrun(f'sbatch --parsable {slurm_script_path}').stdout.strip()
+                if not ctx.obj['dry_run']:
+                    prev_zoom_job_id = sbatch(slurm_script_path)
                 jobids.append(prev_zoom_job_id)
 
-    return jobids
+    if not ctx.obj['dry_run']:
+        write_jobids(jobids)
+
+
+@cli.command()
+@click.pass_context
+def ls(ctx):
+    for key in processing_config:
+        print(key)
 
 
 if __name__ == '__main__':
-    logger.remove()
-    logger.add(sys.stderr, level="DEBUG")
-    method = sys.argv[1]
-    config_key = sys.argv[2]
-
-    jobids = []
-    if method == 'process':
-        if config_key == 'regional':
-            for key in processing_config:
-                if 'km4p4' in key:
-                    jobids.extend(enqueue_simulation(key))
-        else:
-            jobids.extend(enqueue_simulation(config_key))
-    elif method == 'coarsen':
-        jobids.extend(enqueue_coarsen(config_key))
-
-    now = pd.Timestamp.now()
-    date_string = now.strftime("%Y%m%d_%H%M%S")
-    jobids_path = Path(f'slurm/jobids_{date_string}.json')
-    with jobids_path.open('w') as f:
-        json.dump(jobids, f, indent=4)
-    logger.info(f'written jobids to: {jobids_path}')
+    cli(obj={})
