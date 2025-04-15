@@ -442,7 +442,7 @@ def slurm_run(tasks, array_index):
 
     end = timer()
     logger.info(f'Completed in: {end - start:.2f}s')
-    if task['donepath']:
+    if task.get('donepath', ''):
         Path(task['donepath']).write_text(proc.debug_log.getvalue())
 
     return proc

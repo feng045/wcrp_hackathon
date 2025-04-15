@@ -251,56 +251,6 @@ class UMLatLon2HealpixRegridder:
             # if idx == () this still works (i.e. does nothing to regridded_data).
             regridded_data[idx] = z_hpx.numpy()
 
-    @staticmethod
-    def coarsen(da, zooms=range(11)[::-1]):
-        """Produce xr.DataArrays at all zoom levels by successively coarsening.
-        Parameters:
-            da (xr.DataArray) : DataArray to be coarsened, assumed to have been created with .regrid.
-            zooms (list | range) : zooms to coarsen to - decreasing from max to min.
-
-        Returns:
-            Dict[xr.DataArray] : mapping of zoom to coarsened xr.DataArray.
-        """
-        zooms = list(zooms)
-        assert len(da['cell']) == 12 * 4 ** zooms[0], f'cell has wrong number of points for {zooms[0]}'
-
-        dim_shape = list(da.shape[:-1])
-        # These are the ranges - can be used to iter over an idx that selects out each individual lat/lon field for
-        # any number of dims by passing to product as product(*dim_ranges).
-        dim_ranges = [range(s) for s in dim_shape]
-        reduced_dims = [d for d in da.dims if d not in ['cell']]
-
-        num_nans = np.isnan(da.values).sum()
-        logger.debug(f'  - {num_nans} NaNs in {da.name}')
-        if num_nans:
-            coarsen = 'with_weights'
-        else:
-            coarsen = 'without_weights'
-
-        timename = [c for c in da.coords if c.startswith('time')][0]
-        das = {}
-        for zoom in zooms:
-            if zoom == zooms[0]:
-                regridded_data = da.values
-                daout = da
-            else:
-                logger.debug(f'  - coarsen to {zoom}')
-                coarse_regridded_data = np.zeros(dim_shape + [12 * 4 ** zoom])
-                for idx in product(*dim_ranges):
-                    coarse_regridded_data[idx] = hp_coarsen(regridded_data[idx])
-                regridded_data = coarse_regridded_data
-
-                # 2d only.
-                # coords = {timename: da[timename], 'cell': np.arange(regridded_data.shape[1])}
-                coords = {d: da.coords[d] for d in reduced_dims}
-                coords['cell'] = np.arange(regridded_data.shape[-1])
-                daout = xr.DataArray(regridded_data, dims=reduced_dims + ['cell'], coords=coords, attrs=da.attrs)
-                daout.attrs['grid_mapping'] = 'healpix_nested'
-                daout.attrs['healpix_zoom'] = zoom
-                daout.attrs['coarsened'] = True
-            das[zoom] = daout
-        return das
-
 
 def main():
     if len(sys.argv) == 2 and sys.argv[1] == 'gen_weights':
