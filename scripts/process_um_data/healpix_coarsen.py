@@ -4,7 +4,6 @@ from pathlib import Path
 import numpy as np
 import s3fs
 import xarray as xr
-from dask.diagnostics import ProgressBar
 from loguru import logger
 
 from processing_config import processing_config
@@ -79,12 +78,11 @@ def calc_tgt_weights(src_ds, src_ds_region, tgt_ds, tgt_zoom, dim):
     tgt_cell_from_src = ((src_ds.cell.values.reshape(-1, 4).mean(axis=-1) - 1.5) / 4).astype(int)
     weights_global.loc[dict(cell=tgt_cell_from_src)] = weights.values
     tgt_weights = weights_global.isel(cell=tgt_ds.cell)
-    logger.debug(np.isnan(tgt_weights).sum())
+    logger.debug(float(np.isnan(tgt_weights).sum().values))
     return tgt_weights
 
 
-def coarsen_healpix_zarr_region(src_ds, tgt_store, tgt_zoom, dim, start_idx, end_idx, chunks, regional=False,
-                                progress_bar=False):
+def coarsen_healpix_zarr_region(src_ds, tgt_store, tgt_zoom, dim, start_idx, end_idx, chunks, regional=False):
     time_slice = slice(start_idx, end_idx)
     src_zoom = tgt_zoom + 1
     logger.info(f'Coarsen to {tgt_zoom}, time_slice={time_slice}')
@@ -112,13 +110,14 @@ def coarsen_healpix_zarr_region(src_ds, tgt_store, tgt_zoom, dim, start_idx, end
         da.encoding['preferred_chunks'] = preferred_chunks
 
     if regional:
+        zarr_chunks = {'time': chunks[tgt_zoom][0], 'cell': -1}
         tgt_ds_store = xr.open_zarr(tgt_store, chunks=zarr_chunks)
         tgt_ds = tgt_ds.map(map_global_to_regional, src_ds_region=src_ds_region, tgt_ds_store=tgt_ds_store, dim=dim)
         if src_ds_region.time[0] == src_ds.time[0]:
             tgt_weights = calc_tgt_weights(src_ds, src_ds_region, tgt_ds, tgt_zoom, dim)
             # TODO: Need to create weights in empty zarr store for this to work.
-            # tgt_ds['weights'] = tgt_weights
-            # logger.debug(np.isnan(tgt_ds.weights).sum())
+            tgt_ds['weights'] = tgt_weights
+            logger.debug(float(np.isnan(tgt_ds.weights).sum().values))
 
     tgt_ds = tgt_ds.drop_vars('crs')
 
@@ -126,18 +125,15 @@ def coarsen_healpix_zarr_region(src_ds, tgt_store, tgt_zoom, dim, start_idx, end
         region = {'time': time_slice, 'cell': slice(None)}
     elif dim == '3d':
         region = {'time': time_slice, 'pressure': slice(None), 'cell': slice(None)}
-    if progress_bar:
-        job = tgt_ds.chunk(preferred_chunks).to_zarr(tgt_store, region=region, compute=False)
-        logger.info('compute to_zarr')
-        with ProgressBar():
-            job.compute()
-    else:
-        for da in tgt_ds.data_vars.values():
-            logger.debug(f'  writing {da.name}')
+    for da in tgt_ds.data_vars.values():
+        logger.debug(f'  writing {da.name}')
+        if da.name == 'weights':
+            da.chunk({'cell': preferred_chunks['cell']}).to_zarr(tgt_store, region={'cell': slice(None)})
+        else:
             da.chunk(preferred_chunks).to_zarr(tgt_store, region=region)
 
 
-if __name__ == '__main__':
+def main():
     s3cfg = dict([l.split(' = ') for l in Path('/home/users/mmuetz/.s3cfg').read_text().split('\n') if l])
     sim = sys.argv[1]
     dim = sys.argv[2]
@@ -165,8 +161,8 @@ if __name__ == '__main__':
     src_store = s3fs.S3Map(root=urls[zoom], s3=jasmin_s3, check=False)
     test_tgt_store = s3fs.S3Map(root=urls[zoom - 1], s3=jasmin_s3, check=False)
 
-    zarr_chunks = {'time': chunks[zoom - 1][0], 'cell': -1}
-    test_src_ds = xr.open_zarr(src_store, chunks=zarr_chunks)
+    test_zarr_chunks = {'time': chunks[zoom - 1][0], 'cell': -1}
+    test_src_ds = xr.open_zarr(src_store, chunks=test_zarr_chunks)
 
     # tgt_calcs = find_tgt_calcs(urls, chunks=chunks2d, dim='2d', variable='tas')
     # tgt_time_calcs = find_tgt_time_calcs(tgt_calcs, chunks2d)
@@ -175,3 +171,6 @@ if __name__ == '__main__':
     logger.debug((start_idx, end_idx))
     coarsen_healpix_zarr_region(test_src_ds, test_tgt_store, zoom - 1, dim, start_idx, end_idx, chunks,
                                 regional=config['regional'])
+
+if __name__ == '__main__':
+    main()

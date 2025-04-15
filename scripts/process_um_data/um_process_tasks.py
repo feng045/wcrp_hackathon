@@ -1,6 +1,7 @@
 import datetime as dt
 import json
 import sys
+from timeit import default_timer as timer
 from collections import defaultdict
 from functools import partial
 from io import StringIO
@@ -20,8 +21,6 @@ from loguru import logger
 
 from processing_config import processing_config, shared_metadata
 from healpix_coarsen import coarsen_healpix_zarr_region
-
-sys.path.insert(0, '/home/users/mmuetz/deploy/global_hackathon_tools/dataset_transforms')
 from um_latlon_pp_to_healpix_nc import UMLatLon2HealpixRegridder, gen_weights, get_limited_healpix
 
 s3cfg = dict([l.split(' = ') for l in Path('/home/users/mmuetz/.s3cfg').read_text().split('\n') if l])
@@ -182,10 +181,10 @@ def find_halfpast_time(ds):
 def get_regional_bounds(da):
     if 'latitude' in da.coords and 'longitude' in da.coords:
         bounds = {
-            'lower_left_lat': round(da.latitude.values[0], 3),
-            'lower_left_lon': round(da.longitude.values[0] % 360, 3),
-            'upper_right_lat': round(da.latitude.values[-1], 3),
-            'upper_right_lon': round(da.longitude.values[-1] % 360, 3),
+            'lower_left_lat': float(round(da.latitude.values[0], 3)),
+            'lower_left_lon': float(round(da.longitude.values[0] % 360, 3)),
+            'upper_right_lat': float(round(da.latitude.values[-1], 3)),
+            'upper_right_lon': float(round(da.longitude.values[-1] % 360, 3)),
         }
         return bounds
     else:
@@ -228,6 +227,26 @@ class UMProcessTasks:
                 'upper_right_lon': 360,
             }
 
+        grouped_da = defaultdict(list)
+        for group_name, group in self.config['groups'].items():
+            name_map = group['name_map']
+            logger.info(f'Creating {group_name}')
+            group_cubes = cubes.extract(group['constraint'])
+            logger.info(f'Found {len(group_cubes)} cubes for {group_name}')
+
+            for name in name_map.keys():
+                constraint = group['extra_constraints'].get(name, name)
+                try:
+                    cube = group_cubes.extract_cube(constraint)
+                except iris.exceptions.ConstraintMismatchError as e:
+                    logger.warning(f'cube {name} not present')
+                    continue
+
+                # Want to be able to pass extra kwargs to from_iris but can't...
+                # da = xr.DataArray.from_iris(cube, decode_timedelta=True)
+                da = xr.DataArray.from_iris(cube).rename(cube.name())
+                grouped_da[group_name].append(da)
+
         for zoom in range(self.config['max_zoom'] + 1)[::-1]:
             npix = 12 * 4 ** zoom
             ds_tpls = defaultdict(xr.Dataset)
@@ -236,27 +255,16 @@ class UMProcessTasks:
                 time = group['time']
                 zarr_time_name = 'time'
                 zarr_time = time
-
                 zarr_store_name = group['zarr_store']
 
-                logger.info(f'Creating {group_name}')
-                group_cubes = cubes.extract(group['constraint'])
-                name_map = group['name_map']
                 chunks = group['chunks'][zoom]
                 # Multipls of 4**n chosen as these will align well with healpix grids.
                 # Aim for 1-10MB per chunk, bearing in mind that this is saved with 4-byte float32s.
                 logger.trace(f'chunks={chunks}')
 
-                logger.info(f'Found {len(group_cubes)} cubes for {group_name}')
-                for name in name_map.keys():
-                    constraint = group['extra_constraints'].get(name, name)
-                    try:
-                        cube = group_cubes.extract_cube(constraint)
-                    except iris.exceptions.ConstraintMismatchError as e:
-                        logger.warning(f'cube {name} not present')
-                        continue
-                    da, da_tpl, short_name = self.create_dataarray_template(group, cube, chunks, zoom, npix, regional,
-                                                                            zarr_time, zarr_time_name)
+                for da in grouped_da[group_name]:
+                    da_tpl, short_name = self.create_dataarray_template(group, da, chunks, zoom, npix,
+                                                                        zarr_time, zarr_time_name)
                     if regional:
                         if metadata['bounds'] is None:
                             metadata['bounds'] = get_regional_bounds(da)
@@ -264,8 +272,8 @@ class UMProcessTasks:
                     ds_tpls[zarr_store_name][short_name] = da_tpl
 
                 if regional and zoom != self.config['max_zoom']:
-                    coords = {n: c for n, c in da_tpl.coords if not n == 'time'}
-                    dummies = dask.array.zeros(da_tpl.shape[1:], dtype=np.float32, chunks=chunks)
+                    coords = {n: c for n, c in da_tpl.coords.items() if not n == 'time'}
+                    dummies = dask.array.zeros(da_tpl.shape[1:], dtype=np.float32, chunks=chunks[1:])
                     ds_tpls[zarr_store_name]['weights'] = xr.DataArray(dummies, name='weights', coords=coords)
 
             for zarr_store_name, ds_tpl in ds_tpls.items():
@@ -289,19 +297,12 @@ class UMProcessTasks:
                     s3=jasmin_s3, check=False)
                 logger.debug(store_url)
                 logger.debug(ds_tpl)
-                ds_tpl.to_zarr(zarr_store, compute=False)
+                ds_tpl.to_zarr(zarr_store, mode='a', compute=False)
 
-        logger.info('completed')
-        if task['donepath']:
-            Path(task['donepath']).write_text(self.debug_log.getvalue())
+    def create_dataarray_template(self, group, da, chunks, zoom, npix, zarr_time, zarr_time_name):
+        long_name, short_name = group['name_map'][da.name]
+        logger.info(f'- creating da for {da.name} -> {short_name}')
 
-    def create_dataarray_template(self, group, cube, chunks, zoom, npix, regional, zarr_time, zarr_time_name):
-        cube_name = cube.name()
-        long_name, short_name = group['name_map'][cube_name]
-        logger.info(f'- creating da for {cube_name} -> {short_name}')
-        # Want to be able to pass extra kwargs to from_iris but can't...
-        # da = xr.DataArray.from_iris(cube, decode_timedelta=True)
-        da = xr.DataArray.from_iris(cube)
         timename = [c for c in da.coords if c.startswith('time')][0]
         lonname = [c for c in da.coords if c.startswith('longitude')][0]
         latname = [c for c in da.coords if c.startswith('latitude')][0]
@@ -340,14 +341,14 @@ class UMProcessTasks:
         else:
             raise Exception('ndim must be 3 or 4')
         dummies = dask.array.zeros(shape, dtype=np.float32, chunks=chunks)
-        da.attrs.update(group['extra_attrs'].get(cube_name, {}))
+        da.attrs.update(group['extra_attrs'].get(da.name, {}))
         da_tpl = xr.DataArray(dummies, dims=dims, coords=coords, name=short_name, attrs=da.attrs)
         da_tpl = da_tpl.rename(**{timename: zarr_time_name})
-        da_tpl.attrs['UM_name'] = cube_name
+        da_tpl.attrs['UM_name'] = da.name
         da_tpl.attrs['long_name'] = long_name
         da_tpl.attrs['grid_mapping'] = 'healpix_nested'
         da_tpl.attrs['healpix_zoom'] = zoom
-        return da, da_tpl, short_name
+        return da_tpl, short_name
 
     def regrid(self, task):
         inpaths = task['inpaths']
@@ -393,10 +394,6 @@ class UMProcessTasks:
                                       regional, regional_chunks=chunks[-1])
                 da_to_zarr(da_hp, self.config['zarr_store_url_tpl'], group_name, group, zoom, self.config['regional'])
 
-        logger.info('completed')
-        if task['donepath']:
-            Path(task['donepath']).write_text(self.debug_log.getvalue())
-
     def coarsen_healpix_region(self, task):
         dim = task['dim']
         tgt_zoom = task['tgt_zoom']
@@ -418,17 +415,19 @@ class UMProcessTasks:
         chunks = self.config['groups'][dim]['chunks']
         zarr_chunks = {'time': chunks[tgt_zoom][0], 'cell': -1}
         src_ds = xr.open_zarr(src_store, chunks=zarr_chunks)
+        regional = self.config['regional']
 
         for subtask in task['tgt_times']:
             start_idx = subtask['start_idx']
             end_idx = subtask['end_idx']
             logger.debug((start_idx, end_idx))
-            coarsen_healpix_zarr_region(src_ds, tgt_store, tgt_zoom, dim, start_idx, end_idx, chunks)
+            coarsen_healpix_zarr_region(src_ds, tgt_store, tgt_zoom, dim, start_idx, end_idx, chunks, regional)
 
         logger.info('completed')
 
 
 def slurm_run(tasks, array_index):
+    start = timer()
     task = tasks[array_index]
     logger.debug(task)
     proc = UMProcessTasks(processing_config[task['config_key']])
@@ -440,6 +439,12 @@ def slurm_run(tasks, array_index):
         proc.coarsen_healpix_region(task)
     else:
         raise Exception(f'unknown task type {task["task_type"]}')
+
+    end = timer()
+    logger.info(f'Completed in: {end - start:.2f}s')
+    if task['donepath']:
+        Path(task['donepath']).write_text(proc.debug_log.getvalue())
+
     return proc
 
 

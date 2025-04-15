@@ -164,7 +164,7 @@ def process(ctx, config_key):
             create_donepath = donedir / donepath_tpl.format(task='create_empty_zarr_store', date=date)
             logger.debug(create_donepath)
             if not create_donepath.exists():
-                logger.info('creating zarr store')
+                logger.info('Creating zarr store')
                 create_task = {
                     'task_type': 'create_empty_zarr_stores',
                     'config_key': config_key,

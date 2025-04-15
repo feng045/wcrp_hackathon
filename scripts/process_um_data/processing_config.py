@@ -5,6 +5,9 @@ import iris
 import iris.cube
 import pandas as pd
 
+output_vn = 'v5'
+deploy = 'dev'
+
 shared_metadata = {
     'Met Office DYAMOND3 simulations': (
         'A group of experiments have been conducted using the Met Office Unified Model (MetUM) with a focus on the '
@@ -174,7 +177,6 @@ drop_vars = [
 time2d = pd.date_range('2020-01-20', '2021-04-01', freq='h')
 time3d = pd.date_range('2020-01-20', '2021-04-01', freq='3h')
 
-output_vn = 'v4'
 
 
 def invert_cube_sign(cube):
@@ -259,11 +261,11 @@ global_configs = {
         'regional': False,
         'add_cyclic': True,
         'basedir': Path(f'/gws/nopw/j04/kscale/DYAMOND3_data/{simdir}/glm'),
-        'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done/dev'),
-        'donepath_tpl': f'{key}/{{task}}_{{date}}.{output_vn}.done',
+        'donedir': Path(f'/gws/nopw/j04/hrcm/mmuetz/slurm_done/{deploy}'),
+        'donepath_tpl': f'{key}/{output_vn}/{{task}}_{{date}}.done',
         'first_date': pd.Timestamp(2020, 1, 20, 0),
         'max_zoom': 10 if key.startswith('glm.n2560') else 9,
-        'zarr_store_url_tpl': f's3://sim-data/dev/{key}/{output_vn}/data.healpix.{{freq}}.z{{zoom}}.zarr',
+        'zarr_store_url_tpl': f's3://sim-data/{deploy}/{output_vn}/{key}/um.{{freq}}.hp_z{{zoom}}.zarr',
         'drop_vars': drop_vars,
         'regrid_method': 'easygems_delaunay',
         'groups': {
@@ -325,11 +327,11 @@ regional_configs = {
         # 'add_cyclic': key.startswith('CTC'),  # only difference from regional.
         'add_cyclic': False,
         'basedir': map_regional_key_to_path(simdir, key),
-        'donedir': Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done/dev'),
-        'donepath_tpl': f'{key}/{{task}}_{{date}}.{output_vn}.done',
+        'donedir': Path(f'/gws/nopw/j04/hrcm/mmuetz/slurm_done/{deploy}'),
+        'donepath_tpl': f'{key}/{output_vn}/{{task}}_{{date}}.done',
         'max_zoom': 10,
         'first_date': pd.Timestamp(2020, 1, 20, 0),
-        'zarr_store_url_tpl': f's3://sim-data/dev/{key}/{output_vn}/data.healpix.{{freq}}.z{{zoom}}.zarr',
+        'zarr_store_url_tpl': f's3://sim-data/{deploy}/{output_vn}/{key}/um.{{freq}}.hp_z{{zoom}}.zarr',
         'drop_vars': drop_vars,
         'regrid_method': 'easygems_delaunay',
         'groups': {
