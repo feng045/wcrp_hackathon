@@ -95,8 +95,8 @@ def main(vn):
 
     logger.info('scanning input directories...')
     df_inputs = scan_input_dirs(sims, dates)
-    # logger.info('checking object store sizes...')
-    # df_obj_store = check_obj_store_sizes(vn, sims)
+    logger.info('checking object store sizes...')
+    df_obj_store = check_obj_store_sizes(vn, sims)
     df_obj_store = None
     logger.info('checking donefiles...')
     df_donefiles = check_donefiles(vn, sims)
@@ -144,6 +144,12 @@ class Dashboard:
 
         curr_size = df_exists["size"].sum() / TB
 
+        print('Number 12-h dates transferred')
+        print(df_exists.groupby(['sim'])['exists'].sum() / 4)
+        print()
+        print('Number days transferred')
+        print(df_exists.groupby(['sim'])['exists'].sum() / 4 / 2)
+        print()
         print('Percent files transferred')
         print(df_exists.groupby(['sim'])['exists'].sum() / (len(self.dates) * 4) * 100)
         print()
