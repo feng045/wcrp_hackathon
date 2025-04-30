@@ -99,7 +99,7 @@ def da_to_zarr(da, zarr_store_url_tpl, group_name, group, zoom, regional, nan_ch
 
     da = da.rename(**{timename: zarr_time_name})
     idx = np.argmin(np.abs(source_times_to_match[0] - target_times_to_match))
-    assert (source_times_to_match - target_times_to_match[idx: idx + len(source_times_to_match)] < pd.Timedelta(
+    assert (np.abs(source_times_to_match - target_times_to_match[idx: idx + len(source_times_to_match)]) < pd.Timedelta(
         minutes=5)).all(), 'source times do not match target times (thresh = 5 mins)'
 
     logger.debug(

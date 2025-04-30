@@ -44,9 +44,7 @@ def get_limited_healpix(extent, zoom, chunksize):
     return hp_lon[ichunk], hp_lat[ichunk], ichunk
 
 
-def get_extent(da):
-    lonname = [c for c in da.coords if c.startswith('longitude')][0]
-    latname = [c for c in da.coords if c.startswith('latitude')][0]
+def get_extent(da, lonname, latname):
     minlon, maxlon = da[lonname].values[[0, -1]]
     minlat, maxlat = da[latname].values[[0, -1]]
     return minlon, maxlon, minlat, maxlat
@@ -109,7 +107,7 @@ def gen_weights(da, zoom=10, lonname='longitude', latname='latitude', add_cyclic
     hp_lon, hp_lat = hp.pix2ang(nside=nside, ipix=np.arange(npix), lonlat=True, nest=True)
     if regional:
         # TODO: or ichunk?
-        hp_lon, hp_lat, icell = get_regional_cell_idx(get_extent(da), zoom)
+        hp_lon, hp_lat, icell = get_regional_cell_idx(get_extent(da, lonname, latname), zoom)
         hp_lon = hp_lon[icell]
         hp_lat = hp_lat[icell]
     else:
@@ -175,7 +173,7 @@ class UMLatLon2HealpixRegridder:
         # any number of dims by passing to product as product(*dim_ranges).
         dim_ranges = [range(s) for s in dim_shape]
         if self.regional:
-            _, _, ichunk = get_limited_healpix(get_extent(da), self.zoom_level, self.regional_chunks)
+            _, _, ichunk = get_limited_healpix(get_extent(da, lonname, latname), self.zoom_level, self.regional_chunks)
             cells = ichunk
             ncell = len(ichunk)
         else:
@@ -206,8 +204,8 @@ class UMLatLon2HealpixRegridder:
         """Use precomputed weights file to do Delaunay regridding."""
         da_flat = da.stack(cell=(lonname, latname))
         if self.regional:
-            _, _, icell = get_regional_cell_idx(get_extent(da), self.zoom_level)
-            _, _, ichunk = get_limited_healpix(get_extent(da), self.zoom_level, self.regional_chunks)
+            _, _, icell = get_regional_cell_idx(get_extent(da, lonname, latname), self.zoom_level)
+            _, _, ichunk = get_limited_healpix(get_extent(da, lonname, latname), self.zoom_level, self.regional_chunks)
             field = np.full(12 * 4 ** self.zoom_level, np.nan, np.float32)
         else:
             icell = ichunk = field = None
