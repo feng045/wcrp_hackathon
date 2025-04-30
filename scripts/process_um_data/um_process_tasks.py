@@ -1,5 +1,7 @@
+import asyncio
 import datetime as dt
 import json
+import random
 import sys
 from timeit import default_timer as timer
 from collections import defaultdict
@@ -7,6 +9,7 @@ from functools import partial
 from io import StringIO
 from pathlib import Path
 
+import botocore.exceptions
 import dask
 import dask.array
 import iris
@@ -20,7 +23,7 @@ from iris.experimental.stratify import relevel
 from loguru import logger
 
 from processing_config import processing_config, shared_metadata
-from healpix_coarsen import coarsen_healpix_zarr_region
+from healpix_coarsen import coarsen_healpix_zarr_region, async_da_to_zarr_with_retries
 from um_latlon_pp_to_healpix_nc import UMLatLon2HealpixRegridder, gen_weights, get_limited_healpix
 
 s3cfg = dict([l.split(' = ') for l in Path('/home/users/mmuetz/.s3cfg').read_text().split('\n') if l])
@@ -109,12 +112,14 @@ def da_to_zarr(da, zarr_store_url_tpl, group_name, group, zoom, regional, nan_ch
             logger.warning(f'da {da.name} contains NaNs')
 
     if group_name == '2d':
-        da.to_zarr(zarr_store,
-                   region={zarr_time_name: slice(idx, idx + len(da[zarr_time_name])), 'cell': slice(None)})
+        region = {zarr_time_name: slice(idx, idx + len(da[zarr_time_name])), 'cell': slice(None)}
     elif group_name.startswith('3d'):
-        da.to_zarr(zarr_store,
-                   region={zarr_time_name: slice(idx, idx + len(da[zarr_time_name])), 'pressure': slice(None),
-                           'cell': slice(None)})
+        region = {zarr_time_name: slice(idx, idx + len(da[zarr_time_name])), 'pressure': slice(None),
+                  'cell': slice(None)}
+    else:
+        raise ValueError(f'group name {group_name} not recognized')
+    # Handle errors if they arise (started happening on 26/4/25).
+    asyncio.run(async_da_to_zarr_with_retries(da, zarr_store, region))
     return name
 
 

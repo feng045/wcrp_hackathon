@@ -1,6 +1,9 @@
 import sys
+import asyncio
+import random
 from pathlib import Path
 
+import botocore.exceptions
 import numpy as np
 import s3fs
 import xarray as xr
@@ -125,12 +128,41 @@ def coarsen_healpix_zarr_region(src_ds, tgt_store, tgt_zoom, dim, start_idx, end
         region = {'time': time_slice, 'cell': slice(None)}
     elif dim == '3d':
         region = {'time': time_slice, 'pressure': slice(None), 'cell': slice(None)}
+    else:
+        raise ValueError(f'dim {dim} is not supported')
     for da in tgt_ds.data_vars.values():
         logger.debug(f'  writing {da.name}')
         if da.name == 'weights':
-            da.chunk({'cell': preferred_chunks['cell']}).to_zarr(tgt_store, region={'cell': slice(None)})
+            asyncio.run(async_da_to_zarr_with_retries(da.chunk({'cell': preferred_chunks['cell']}), tgt_store, region))
         else:
-            da.chunk(preferred_chunks).to_zarr(tgt_store, region=region)
+            asyncio.run(async_da_to_zarr_with_retries(da.chunk(preferred_chunks), tgt_store, region))
+
+
+async def async_da_to_zarr_with_retries(da, store, region, max_retries=5):
+    # This got complicated quite quickly. I was getting exceptions intermittently with da.to_zarr. Handling these
+    # exceptions wasn't working because it was being thrown from async code, so I needed to write my own async func
+    # so I could call await asyncio.sleep(...). This is how you call it. ChatGPT helped with the async stuff.
+    retries = 0
+    success = False
+    while retries < max_retries:
+        try:
+            da.to_zarr(store, region=region)
+            success = True
+            logger.debug(f'{da.name} successfully written to zarr')
+            break
+        except (botocore.exceptions.ClientError, OSError, PermissionError, FileNotFoundError) as e:
+            # This has started (26/4/2025) raising exceptions, one as an inner, one as outer.
+            # Not sure which exception is responsible/the one to catch.
+            # It has previously been fine.
+            logger.warning(f'Failed to write {da.name} to zarr store {store}')
+            logger.warning(e)
+            retries += 1
+            # Sleep 10s, then 20s... with 5s jitter.
+            timeout = 10 * retries + random.uniform(-5, 5)
+            logger.debug(f'sleeping for {timeout} s')
+            await asyncio.sleep(timeout)
+    if not success:
+        raise Exception(f'failed to write {da.name} to zarr store {store} after {retries} retries')
 
 
 def main():
