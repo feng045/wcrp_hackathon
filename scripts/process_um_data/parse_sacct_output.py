@@ -45,9 +45,11 @@ df_comp = df[df.state == 'COMPLETED']
 
 print(df.to_string())
 print()
-print('failed  :', nfailed)
-print('running :', (df.state == 'RUNNING').sum())
-print('complete:', (df.state == 'COMPLETED').sum())
+# print('failed  :', nfailed)
+# print('running :', (df.state == 'RUNNING').sum())
+# print('complete:', (df.state == 'COMPLETED').sum())
+for state, value in df.state.value_counts().items():
+    print(f"{state:<10}: {value}")
 
 print()
 print('earliest start:', df_comp.start.min())
