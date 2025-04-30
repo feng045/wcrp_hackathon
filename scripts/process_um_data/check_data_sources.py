@@ -97,7 +97,6 @@ def main(vn):
     df_inputs = scan_input_dirs(sims, dates)
     logger.info('checking object store sizes...')
     df_obj_store = check_obj_store_sizes(vn, sims)
-    df_obj_store = None
     logger.info('checking donefiles...')
     df_donefiles = check_donefiles(vn, sims)
 
