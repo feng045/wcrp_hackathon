@@ -20,10 +20,18 @@ SLURM_SCRIPT_ARRAY = """#!/bin/bash
 #SBATCH --partition=standard
 #SBATCH --qos=standard
 #SBATCH --array=0-{njobs}%{nconcurrent_tasks}
-#SBATCH -o slurm/output/{job_name}_{config_key}_{date_string}_%J_%a.out
-#SBATCH -e slurm/output/{job_name}_{config_key}_{date_string}_%J_%a.err
+#SBATCH -o slurm/output/{job_name}_{config_key}_{date_string}_%A_%a.out
+#SBATCH -e slurm/output/{job_name}_{config_key}_{date_string}_%A_%a.err
 #SBATCH --comment={comment}
+# These nodes repeatedly fail to be able to read the kscale GWS.
+#SBATCH --exclude=host1012,host1077,host1106
 {dependency}
+
+# Quick check to see if it can access the kscale GWS.
+if ! ls /gws/nopw/j04/kscale > /dev/null 2>&1; then
+    echo "ERROR: kscale GWS not accessible on $(hostname)! Exiting."
+    exit 99
+fi
 
 ARRAY_INDEX=${{SLURM_ARRAY_TASK_ID}}
 
@@ -87,6 +95,10 @@ def find_dyamond3_pp_dates_to_paths(basedir):
     pp_paths = [p for p in pp_paths if p.is_file()]
     dates_to_paths = defaultdict(list)
     for path in pp_paths:
+        # These appear after about 2020-02-20 - not sure why.
+        # Not sure what's in them either.
+        if 'apvere' in path.stem:
+            continue
         dates_to_paths[parse_date_from_pp_path(path)].append(path)
     # Only keep completed downloads.
     dates_to_paths = {
@@ -239,10 +251,17 @@ def coarsen(ctx, config_key):
         '3d': 'PT3H',
     }
     # Last variables for each.
-    variables = {
-        '2d': 'rsutcs',
-        '3d': 'qs',
-    }
+    if config_key != 'glm.n1280_GAL9_nest':
+        variables = {
+            '2d': 'rsutcs',
+            '3d': 'qs',
+        }
+    else:
+        # qs not in glm.n1280_GAL9_nest
+        variables = {
+            '2d': 'rsutcs',
+            '3d': 'zg',
+        }
     jobids = []
     for dim in ['3d', '2d']:
         prev_zoom_job_id = None
