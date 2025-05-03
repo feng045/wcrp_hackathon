@@ -85,7 +85,7 @@ def write_tasks_slurm_job_array(tasks, job_name, nconcurrent_tasks=30, depends_o
 
 def find_imerg_paths(basedir):
     # Search for pp_paths with a specific date (N.B. filename sensitive).
-    nc_paths = sorted(basedir.glob('*.nc'))
+    nc_paths = sorted(basedir.glob('*/*.nc'))
     logger.debug(f'found {len(nc_paths)} nc paths')
     dates_to_paths = {parse_date_from_imerg_path(p): p for p in nc_paths}
     return dates_to_paths
@@ -133,9 +133,9 @@ def process(ctx):
     nconcurrent_tasks = ctx.obj['nconcurrent_tasks']
 
     logger.debug(f'using {nconcurrent_tasks} concurrent tasks')
-    basedir = Path('/gws/nopw/j04/hrcm/mmuetz/obs/IMERGv7')
+    basedir = Path('/gws/nopw/j04/hrcm/mmuetz/obs/IR_IMERG_Combined_V07B')
     logger.debug(f'basedir: {basedir}')
-    donedir = Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done/dev/imerg/v3')
+    donedir = Path('/gws/nopw/j04/hrcm/mmuetz/slurm_done/dev/ir_imerg_combined/v1')
     logger.debug(f'donedir: {donedir}')
     donepath_tpl = 'imerg.{task}.{date}.done'
     logger.debug(f'donepath_tpl: {donepath_tpl}')

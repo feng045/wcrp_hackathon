@@ -121,7 +121,7 @@ class ImergProcessTasks:
         self.debug_log = StringIO()
         logger.add(self.debug_log)
         deploy = 'dev'
-        self.zarr_store_url_tpl = f's3://sim-data/{deploy}/v4/imerg/imerg.hp_z{{zoom}}.zarr'
+        self.zarr_store_url_tpl = f's3://sim-data/{deploy}/v1/IR_IMERG_combined/IR_IMERG_combined_V07B.hp_z{{zoom}}.zarr'
         self.max_zoom = 9
 
     def create_empty_zarr_stores(self, task):
