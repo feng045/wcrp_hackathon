@@ -27,13 +27,6 @@ from healpix_coarsen import coarsen_healpix_zarr_region, async_da_to_zarr_with_r
 from um_latlon_pp_to_healpix_nc import UMLatLon2HealpixRegridder, gen_weights, get_limited_healpix
 
 s3cfg = dict([l.split(' = ') for l in Path('/home/users/mmuetz/.s3cfg').read_text().split('\n') if l])
-jasmin_s3 = s3fs.S3FileSystem(
-    anon=False,
-    secret=s3cfg['secret_key'],
-    key=s3cfg['access_key'],
-    client_kwargs={'endpoint_url': 'http://hackathon-o.s3.jc.rl.ac.uk'}
-)
-
 iris.FUTURE.date_microseconds = True
 
 
@@ -76,6 +69,13 @@ def da_to_zarr(da, zarr_store_url_tpl, group_name, group, zoom, regional, nan_ch
 
     zarr_store_name = group['zarr_store']
     url = zarr_store_url_tpl.format(freq=zarr_store_name, zoom=zoom)
+    jasmin_s3 = s3fs.S3FileSystem(
+        anon=False,
+        secret=s3cfg['secret_key'],
+        key=s3cfg['access_key'],
+        client_kwargs={'endpoint_url': 'http://hackathon-o.s3.jc.rl.ac.uk'}
+    )
+
     zarr_store = s3fs.S3Map(
         root=url,
         s3=jasmin_s3, check=False)
@@ -253,6 +253,13 @@ class UMProcessTasks:
                 grouped_da[group_name].append(da)
 
         for zoom in range(self.config['max_zoom'] + 1)[::-1]:
+            jasmin_s3 = s3fs.S3FileSystem(
+                anon=False,
+                secret=s3cfg['secret_key'],
+                key=s3cfg['access_key'],
+                client_kwargs={'endpoint_url': 'http://hackathon-o.s3.jc.rl.ac.uk'}
+            )
+
             npix = 12 * 4 ** zoom
             ds_tpls = defaultdict(xr.Dataset)
 
@@ -297,6 +304,7 @@ class UMProcessTasks:
 
                 logger.info(f'Saving {task["config_key"]} zoom={zoom}')
                 store_url = zarr_store_url_tpl.format(freq=zarr_store_name, zoom=zoom)
+
                 zarr_store = s3fs.S3Map(
                     root=store_url,
                     s3=jasmin_s3, check=False)
@@ -414,6 +422,13 @@ class UMProcessTasks:
             z: rel_url_tpl.format(freq=freq, zoom=z)
             for z in range(11)
         }
+        jasmin_s3 = s3fs.S3FileSystem(
+            anon=False,
+            secret=s3cfg['secret_key'],
+            key=s3cfg['access_key'],
+            client_kwargs={'endpoint_url': 'http://hackathon-o.s3.jc.rl.ac.uk'}
+        )
+
         src_store = s3fs.S3Map(root=urls[src_zoom], s3=jasmin_s3, check=False)
         tgt_store = s3fs.S3Map(root=urls[tgt_zoom], s3=jasmin_s3, check=False)
 
@@ -423,10 +438,19 @@ class UMProcessTasks:
         regional = self.config['regional']
 
         for subtask in task['tgt_times']:
+            subtask_log = StringIO()
+            logger_id = logger.add(subtask_log)
+
             start_idx = subtask['start_idx']
             end_idx = subtask['end_idx']
+            donepath = Path(subtask['donepath'])
             logger.debug((start_idx, end_idx))
             coarsen_healpix_zarr_region(src_ds, tgt_store, tgt_zoom, dim, start_idx, end_idx, chunks, regional)
+            donepath.parent.mkdir(parents=True, exist_ok=True)
+            logger.trace(f'completed subtask {subtask}')
+            logger.info(f'writing donepath: {donepath}')
+            donepath.write_text(subtask_log.getvalue())
+            logger.remove(logger_id)
 
         logger.info('completed')
 
@@ -453,6 +477,54 @@ def slurm_run(tasks, array_index):
     return proc
 
 
+def add_orog_land_sea(config_key):
+    config = processing_config[config_key]
+    basedir = config['basedir']
+    max_zoom = config['max_zoom']
+    add_cyclic = config.get('add_cyclic', True)
+    regional = config.get('regional', False)
+    zarr_store_url_tpl = config['zarr_store_url_tpl']
+
+    cubes = iris.load(basedir / f'field.pp/apa.pp/{config_key}.apa_20200120T00.pp')
+    land = xr.DataArray.from_iris(cubes.extract_cube('land_binary_mask'))
+    orog = xr.DataArray.from_iris(cubes.extract_cube('surface_altitude'))
+
+    weights_path = (Path('/gws/nopw/j04/hrcm/mmuetz/weights/') /
+                    weights_filename(land, config['max_zoom'], 'longitude',
+                                     'latitude', add_cyclic, regional))
+    assert weights_path.exists(), f'{weights_path} does not exist'
+    regridder = UMLatLon2HealpixRegridder(zoom_level=max_zoom, weights_path=weights_path, add_cyclic=add_cyclic,
+                                          regional=regional)
+    hpland = regridder.regrid(land, 'longitude', 'latitude')
+    hporog = regridder.regrid(orog, 'longitude', 'latitude')
+    hpland.attrs['long_name'] = 'land_area_fraction'
+    hporog.attrs['long_name'] = 'surface_altitude'
+
+    jasmin_s3 = s3fs.S3FileSystem(
+        anon=False,
+        secret=s3cfg['secret_key'],
+        key=s3cfg['access_key'],
+        client_kwargs={'endpoint_url': 'http://hackathon-o.s3.jc.rl.ac.uk'}
+    )
+    for zoom in range(max_zoom, -1, -1):
+        if zoom != max_zoom:
+            assert regional == False, 'will not work with regional data yet'
+            hpland = hpland.coarsen(cell=4).mean()
+            hporog = hporog.coarsen(cell=4).mean()
+
+        for freq in ['PT1H', 'PT3H']:
+            store_url = zarr_store_url_tpl.format(freq=freq, zoom=zoom)
+            logger.info(f'Writing z{zoom} orog/land-sea to {freq}: {store_url}')
+            zarr_store = s3fs.S3Map(
+                root=store_url,
+                s3=jasmin_s3, check=False)
+
+            ds_tpl = xr.open_zarr(zarr_store)
+            ds_tpl['orog'] = hporog
+            ds_tpl['sftlf'] = hpland
+            ds_tpl[['orography', 'land_sea_mask']].to_zarr(zarr_store, mode='a')
+
+
 if __name__ == '__main__':
     logger.remove()
     custom_fmt = ("<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
@@ -472,74 +544,7 @@ if __name__ == '__main__':
             tasks = json.load(f)
 
         slurm_run(tasks, int(sys.argv[3]))
-    elif sys.argv[1] == 'create_empty_zarr_stores':
-        logger.info(sys.argv)
-        config_key = sys.argv[2]
-        test_date = sys.argv[3]
-        config = processing_config[config_key]
-        basedir = config['basedir']
-        test_inpaths = [
-            basedir / f'field.pp/apver{s}.pp/{config_key}.apver{s}_{test_date}.pp'
-            for s in 'abcd'
-        ]
-
-        for path in test_inpaths:
-            assert path.exists(), f'{path} does not exist'
-
-        task = {
-            'task_type': 'create_empty_zarr_stores',
-            'config_key': config_key,
-            'date': test_date,
-            'inpaths': test_inpaths,
-            'donepath': None,
-        }
-        slurm_run([task], 0)
-    elif sys.argv[1] == 'regrid':
-        config_key = sys.argv[2]
-        test_date = sys.argv[3]
-        config = processing_config[config_key]
-        basedir = config['basedir']
-        test_inpaths = [
-            basedir / f'field.pp/apver{s}.pp/{config_key}.apver{s}_{test_date}.pp'
-            for s in 'abcd'
-        ]
-        for path in test_inpaths:
-            assert path.exists(), f'{path} does not exist'
-        task = {
-            'task_type': 'regrid',
-            'config_key': config_key,
-            'date': test_date,
-            'inpaths': test_inpaths,
-            'donepath': None,
-        }
-        slurm_run([task], 0)
-    elif sys.argv[1] == 'coarsen_healpix_region':
-        config_key = sys.argv[2]
-        config = processing_config[config_key]
-        chunks = config['2d']['chunks']
-        task = {
-            'task_type': 'coarsen_healpix_region',
-            'config_key': config_key,
-            'z': int(sys.argv[3]),
-            'start_time_idx': int(sys.argv[4]),
-            'chunks': chunks,
-            'n_tgt_time_chunks': int(sys.argv[5]),
-        }
-        slurm_run([task], 0)
-    elif sys.argv[1] == 'gen_weights':
-        config_key = sys.argv[2]
-        cube_name = sys.argv[3]
-
-        test_date = '20200120T00'
-        config = processing_config[config_key]
-        basedir = config['basedir']
-
-        cubes = iris.load(basedir / f'field.pp/apvera.pp/{config_key}.apvera_{test_date}.pp')
-        cube = cubes.extract_cube(cube_name)
-        da = xr.DataArray.from_iris(cube)
-        chunks = config['groups']['2d']['chunks'][10]
-        raise NotImplemented
-        gen_weights(da, 10, weights_path=weights_filename(da, 'longitude', 'latitude'), add_cyclic=False,
-                    regional=True, regional_chunks=chunks[-1])
+    elif sys.argv[1] == 'add_orog_land_sea':
+        add_orog_land_sea(sys.argv[2])
     else:
         raise Exception(f'Unknown command {sys.argv[1]}')
