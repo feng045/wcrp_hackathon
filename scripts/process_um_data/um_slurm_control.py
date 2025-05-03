@@ -1,16 +1,20 @@
+import math
+import sys
+import asyncio
 import json
 import subprocess as sp
-import sys
 from collections import defaultdict
 from itertools import batched
 from pathlib import Path
 
 import click
+import numpy as np
 import pandas as pd
 from loguru import logger
 
-from calc_completed_chunks import find_tgt_calcs, find_tgt_time_calcs
-from processing_config import processing_config
+# from calc_completed_chunks import find_tgt_calcs, find_tgt_time_calcs
+from calc_completed_chunks import async_retry_open_zarr
+from processing_config import processing_config, output_vn
 
 SLURM_SCRIPT_ARRAY = """#!/bin/bash
 #SBATCH --job-name="{job_name}"
@@ -24,7 +28,7 @@ SLURM_SCRIPT_ARRAY = """#!/bin/bash
 #SBATCH -e slurm/output/{job_name}_{config_key}_{date_string}_%A_%a.err
 #SBATCH --comment={comment}
 # These nodes repeatedly fail to be able to read the kscale GWS.
-#SBATCH --exclude=host1012,host1077,host1106
+#SBATCH --exclude=host1012,host1077,host1087,host1106
 {dependency}
 
 # Quick check to see if it can access the kscale GWS.
@@ -228,9 +232,11 @@ def process(ctx, config_key):
 
 
 @cli.command()
+@click.option('--nbatch', '-N', default=5)
+@click.option('--endtime', '-E', default='2021-03-01 00:00')
 @click.argument('config_key')
 @click.pass_context
-def coarsen(ctx, config_key):
+def coarsen(ctx, nbatch, endtime, config_key):
     # This needs to be it's own command. The reason is that I need to be able to examine a completed
     # zarr store to be able to work out how to divvy up the work. This can only been done once the above have completed,
     # and can't be calculated in advance. It would be possible to have a job whose sole purpose was to do this calc and
@@ -251,40 +257,45 @@ def coarsen(ctx, config_key):
         '3d': 'PT3H',
     }
     # Last variables for each.
-    if config_key != 'glm.n1280_GAL9_nest':
-        variables = {
-            '2d': 'rsutcs',
-            '3d': 'qs',
-        }
-    else:
-        # qs not in glm.n1280_GAL9_nest
-        variables = {
-            '2d': 'rsutcs',
-            '3d': 'zg',
-        }
     jobids = []
-    for dim in ['3d', '2d']:
+    dummy_donepath_tpl = config['donepath_tpl']
+    dummy_donepath = dummy_donepath_tpl.format(task='dummy', date='dummy')
+    donereldir = Path(dummy_donepath).parent
+    donepath_tpl = str(config['donedir'] / donereldir / 'coarsen/{dim}/z{zoom}/{job_id}.done')
+
+    max_zoom = config['max_zoom']
+
+    for dim in ['2d', '3d']:
         prev_zoom_job_id = None
 
         rel_url_tpl = config['zarr_store_url_tpl'][5:]  # chop off 's3://'
-        freq = freqs[dim]
-        urls = {
-            z: rel_url_tpl.format(freq=freq, zoom=z)
-            for z in range(11)
-        }
+        rel_url = rel_url_tpl.format(freq=freqs[dim], zoom=10)
+        src_ds = asyncio.run(async_retry_open_zarr('http://hackathon-o.s3.jc.rl.ac.uk/' + rel_url))
+        if endtime is not None:
+            src_ds = src_ds.sel(time=slice(endtime))
+        time_idx = np.arange(len(src_ds.time))
 
         chunks = config['groups'][dim]['chunks']
-        max_zoom = config['max_zoom']
-        variable = variables[dim]
-
-        tgt_calcs = find_tgt_calcs(urls, chunks=chunks, variable=variable, max_zoom=max_zoom, dim=dim)
-        tgt_time_calcs = find_tgt_time_calcs(tgt_calcs, chunks=chunks)
 
         for zoom in range(max_zoom - 1, -1, -1):
-            if zoom not in tgt_time_calcs:
-                continue
+            logger.info(f'calc jobs for zoom {zoom}')
             tasks = []
-            for tgt_times in batched(tgt_time_calcs[zoom], 10):
+            timechunk = chunks[zoom][0]
+            logger.debug(f'timechunk: {timechunk}')
+            njobs = int(math.ceil(len(time_idx) / timechunk))
+            job_idx = [
+                i for i in range(njobs)
+                if not Path(donepath_tpl.format(dim=dim, zoom=zoom, job_id=i)).exists()
+            ]
+            tgt_time_calcs = [
+                {
+                    'start_idx': i * timechunk,
+                    'end_idx': (i + 1) * timechunk,
+                    'donepath': donepath_tpl.format(dim=dim, zoom=zoom, job_id=i),
+                }
+                for i in job_idx
+            ]
+            for tgt_times in batched(tgt_time_calcs, nbatch):
                 tasks.append(
                     {
                         'task_type': 'coarsen',
