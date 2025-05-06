@@ -21,14 +21,16 @@ SLURM_SCRIPT_ARRAY = """#!/bin/bash
 #SBATCH --time=10:00:00
 #SBATCH --mem={mem}
 #SBATCH --account=hrcm
-#SBATCH --partition=standard
-#SBATCH --qos=standard
+#SBATCH --ntasks={ntasks}
+#SBATCH --cpus-per-task={cpus_per_task}
+#SBATCH --partition={partition}
+#SBATCH --qos={qos}
 #SBATCH --array=0-{njobs}%{nconcurrent_tasks}
 #SBATCH -o slurm/output/{job_name}_{config_key}_{date_string}_%A_%a.out
 #SBATCH -e slurm/output/{job_name}_{config_key}_{date_string}_%A_%a.err
 #SBATCH --comment={comment}
 # These nodes repeatedly fail to be able to read the kscale GWS.
-#SBATCH --exclude=host1012,host1077,host1087,host1106
+#SBATCH --exclude=host1012,host1077,host1087,host1106,host1186
 {dependency}
 
 # Quick check to see if it can access the kscale GWS.
@@ -61,7 +63,7 @@ def parse_date_from_pp_path(path):
     return pd.to_datetime(datestr, format="%Y%m%dT%H")
 
 
-def write_tasks_slurm_job_array(config_key, tasks, job_name, nconcurrent_tasks=30, depends_on=None, mem=100000):
+def write_tasks_slurm_job_array(config_key, tasks, job_name, depends_on=None, **kwargs):
     now = pd.Timestamp.now()
     date_string = now.strftime("%Y%m%d_%H%M%S")
 
@@ -81,14 +83,27 @@ def write_tasks_slurm_job_array(config_key, tasks, job_name, nconcurrent_tasks=3
 
     slurm_script_path = Path(f'slurm/scripts/script_{job_name}_{config_key}_{date_string}.sh')
     njobs = len(tasks) - 1
-    slurm_script_path.write_text(
-        SLURM_SCRIPT_ARRAY.format(job_name=job_name, config_key=config_key, njobs=njobs,
-                                  mem=mem,
-                                  nconcurrent_tasks=nconcurrent_tasks,
-                                  tasks_path=tasks_path,
-                                  dependency=dependency,
-                                  date_string=date_string,
-                                  comment=comment))
+    slurm_kwargs = dict(
+        ntasks=1,
+        cpus_per_task=1,
+        partition='standard',
+        qos='standard',
+        mem=100000,
+        nconcurrent_tasks=40,
+    )
+    slurm_kwargs.update(kwargs)
+    script_kwargs = dict(
+        job_name=job_name,
+        config_key=config_key,
+        njobs=njobs,
+        tasks_path=tasks_path,
+        dependency=dependency,
+        date_string=date_string,
+        comment=comment,
+    )
+
+    logger.debug({**slurm_kwargs, **script_kwargs})
+    slurm_script_path.write_text(SLURM_SCRIPT_ARRAY.format(**{**slurm_kwargs, **script_kwargs}))
     return slurm_script_path
 
 
@@ -311,10 +326,22 @@ def coarsen(ctx, nbatch, endtime, config_key):
                     mem = 256000
                 else:
                     mem = 100000
-                slurm_script_path = write_tasks_slurm_job_array(config_key, tasks, f'coarsen_{dim}_{zoom}',
-                                                                mem=mem,
-                                                                nconcurrent_tasks=nconcurrent_tasks,
-                                                                depends_on=prev_zoom_job_id)
+                # The heart of this method is a ds.coarsen(cell=4).mean() call.
+                # This benefits massively from a dask speed up.
+                # Request lots of cores per task.
+                slurm_script_path = write_tasks_slurm_job_array(
+                    config_key, tasks, f'coarsen_{dim}_{zoom}',
+                    depends_on=prev_zoom_job_id,
+                    partition='standard',
+                    nconcurrent_tasks=nconcurrent_tasks,
+                    qos='high',
+                    # I think you have to use 48 (instead of 12 - only two checked) because
+                    # otherwise you get multiple dask LocalClusters starting on same node.
+                    # cpus_per_task=48,  # maxes out at 6 tasks/288 cpus because of max cpus.
+                    cpus_per_task=12,  # maxes out at 24 tasks/288 cpus because of max cpus.
+                    mem=mem,
+                )
+
                 logger.debug(slurm_script_path)
 
                 if not ctx.obj['dry_run']:
