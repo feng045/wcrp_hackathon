@@ -12,6 +12,7 @@ from pathlib import Path
 import botocore.exceptions
 import dask
 import dask.array
+from dask.distributed import LocalCluster
 import iris
 import iris.exceptions
 import numpy as np
@@ -437,6 +438,11 @@ class UMProcessTasks:
         src_ds = xr.open_zarr(src_store, chunks=zarr_chunks)
         regional = self.config['regional']
 
+        cluster = LocalCluster()  # Fully-featured local Dask cluster
+        client = cluster.get_client()
+        logger.debug(cluster)
+        logger.debug(client)
+
         for subtask in task['tgt_times']:
             subtask_log = StringIO()
             logger_id = logger.add(subtask_log)
@@ -500,17 +506,28 @@ def add_orog_land_sea(config_key):
     hpland.attrs['long_name'] = 'land_area_fraction'
     hporog.attrs['long_name'] = 'surface_altitude'
 
-    jasmin_s3 = s3fs.S3FileSystem(
-        anon=False,
-        secret=s3cfg['secret_key'],
-        key=s3cfg['access_key'],
-        client_kwargs={'endpoint_url': 'http://hackathon-o.s3.jc.rl.ac.uk'}
-    )
     for zoom in range(max_zoom, -1, -1):
+        jasmin_s3 = s3fs.S3FileSystem(
+            anon=False,
+            secret=s3cfg['secret_key'],
+            key=s3cfg['access_key'],
+            client_kwargs={'endpoint_url': 'http://hackathon-o.s3.jc.rl.ac.uk'}
+        )
         if zoom != max_zoom:
             assert regional == False, 'will not work with regional data yet'
             hpland = hpland.coarsen(cell=4).mean()
             hporog = hporog.coarsen(cell=4).mean()
+            hpland['cell'] = np.arange(len(hpland.cell))
+            hporog['cell'] = np.arange(len(hporog.cell))
+
+        # crs = xr.DataArray(
+        #     name="crs",
+        #     attrs={
+        #         "grid_mapping_name": "healpix",
+        #         "healpix_nside": 2 ** zoom,
+        #         "healpix_order": "nest",
+        #     },
+        # )
 
         for freq in ['PT1H', 'PT3H']:
             store_url = zarr_store_url_tpl.format(freq=freq, zoom=zoom)
@@ -519,10 +536,14 @@ def add_orog_land_sea(config_key):
                 root=store_url,
                 s3=jasmin_s3, check=False)
 
-            ds_tpl = xr.open_zarr(zarr_store)
-            ds_tpl['orog'] = hporog
-            ds_tpl['sftlf'] = hpland
-            ds_tpl[['orography', 'land_sea_mask']].to_zarr(zarr_store, mode='a')
+            ds_static = xr.Dataset()
+            # ds_static['orog'] = hporog.copy().assign_coords(crs=crs)
+            # ds_static['sftlf'] = hpland.copy().assign_coords(crs=crs)
+            ds_static['orog'] = hporog.copy()
+            ds_static['sftlf'] = hpland.copy()
+            print(ds_static)
+            # breakpoint()
+            ds_static.to_zarr(zarr_store, mode='a')
 
 
 if __name__ == '__main__':
