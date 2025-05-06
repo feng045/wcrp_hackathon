@@ -67,7 +67,7 @@ def find_tgt_can_complete(factor, src_completed, tgt_completed):
     return tgt_can_complete
 
 
-async def async_retry_open_zarr(url, max_retries=10):
+async def async_retry_open_zarr(url, max_retries=20):
     retries = 0
     while retries < max_retries:
         try:
@@ -81,7 +81,7 @@ async def async_retry_open_zarr(url, max_retries=10):
             logger.warning(e)
             retries += 1
             # Sleep 10s, then 20s... with 5s jitter.
-            timeout = 10 * retries + random.uniform(-5, 5)
+            timeout = 1 * retries + random.uniform(-0.5, 0.5)
             logger.warning(f'sleeping for {timeout} s')
             await asyncio.sleep(timeout)
     raise Exception(f'failed to open {url} after {retries} retries')
