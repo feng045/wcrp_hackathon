@@ -30,7 +30,7 @@ SLURM_SCRIPT_ARRAY = """#!/bin/bash
 #SBATCH -e slurm/output/{job_name}_{config_key}_{date_string}_%A_%a.err
 #SBATCH --comment={comment}
 # These nodes repeatedly fail to be able to read the kscale GWS.
-#SBATCH --exclude=host1012,host1077,host1087,host1106,host1186
+#SBATCH --exclude=host1012,host1077,host1087,host1106,host1186,host1080,host1197
 {dependency}
 
 # Quick check to see if it can access the kscale GWS.
@@ -284,7 +284,7 @@ def coarsen(ctx, nbatch, endtime, config_key):
         prev_zoom_job_id = None
 
         rel_url_tpl = config['zarr_store_url_tpl'][5:]  # chop off 's3://'
-        rel_url = rel_url_tpl.format(freq=freqs[dim], zoom=10)
+        rel_url = rel_url_tpl.format(freq=freqs[dim], zoom=max_zoom)
         src_ds = asyncio.run(async_retry_open_zarr('http://hackathon-o.s3.jc.rl.ac.uk/' + rel_url))
         if endtime is not None:
             src_ds = src_ds.sel(time=slice(endtime))

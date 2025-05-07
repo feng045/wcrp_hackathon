@@ -208,7 +208,6 @@ class UMProcessTasks:
 
     def create_empty_zarr_stores(self, task):
         inpaths = task['inpaths']
-        # TODO: Store-level metadata.
         zarr_store_url_tpl = self.config['zarr_store_url_tpl']
 
         cubes = iris.load(inpaths)
@@ -520,16 +519,18 @@ def add_orog_land_sea(config_key):
             hpland['cell'] = np.arange(len(hpland.cell))
             hporog['cell'] = np.arange(len(hporog.cell))
 
-        # crs = xr.DataArray(
-        #     name="crs",
-        #     attrs={
-        #         "grid_mapping_name": "healpix",
-        #         "healpix_nside": 2 ** zoom,
-        #         "healpix_order": "nest",
-        #     },
-        # )
+        crs = xr.DataArray(
+            name="crs",
+            attrs={
+                "grid_mapping_name": "healpix",
+                "healpix_nside": 2 ** zoom,
+                "healpix_order": "nest",
+            },
+        )
 
         for freq in ['PT1H', 'PT3H']:
+            if zoom == 10:
+                continue
             store_url = zarr_store_url_tpl.format(freq=freq, zoom=zoom)
             logger.info(f'Writing z{zoom} orog/land-sea to {freq}: {store_url}')
             zarr_store = s3fs.S3Map(
@@ -537,12 +538,9 @@ def add_orog_land_sea(config_key):
                 s3=jasmin_s3, check=False)
 
             ds_static = xr.Dataset()
-            # ds_static['orog'] = hporog.copy().assign_coords(crs=crs)
-            # ds_static['sftlf'] = hpland.copy().assign_coords(crs=crs)
-            ds_static['orog'] = hporog.copy()
-            ds_static['sftlf'] = hpland.copy()
+            ds_static['orog'] = hporog.copy().assign_coords(crs=crs)
+            ds_static['sftlf'] = hpland.copy().assign_coords(crs=crs)
             print(ds_static)
-            # breakpoint()
             ds_static.to_zarr(zarr_store, mode='a')
 
 

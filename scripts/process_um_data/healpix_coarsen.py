@@ -131,6 +131,12 @@ def coarsen_healpix_zarr_region(src_ds, tgt_store, tgt_zoom, dim, start_idx, end
     else:
         raise ValueError(f'dim {dim} is not supported')
     for da in tgt_ds.data_vars.values():
+        if np.isnan(da.values).all():
+            logger.error(f'ERROR: ALL VALUES ARE NAN FOR {da.name}')
+        else:
+            logger.debug('values not all nan')
+        if da.name in ['orog', 'sftlf']:
+            continue
         logger.debug(f'  writing {da.name}')
         if da.name == 'weights':
             asyncio.run(async_da_to_zarr_with_retries(da.chunk({'cell': preferred_chunks['cell']}), tgt_store, region))
